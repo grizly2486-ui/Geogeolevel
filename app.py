@@ -123,7 +123,7 @@ class TrimbleDiniBFFBParser:
                     
                     measurements.append(RawMeasurement(
                         back_point=current_back_point,
-                        fore_point=fore_point,
+                        fore_point=fore_pt,
                         back_reading=current_back_reading,
                         fore_reading=fore_reading,
                         back_dist=current_back_dist,
@@ -174,7 +174,7 @@ class RunAnalyzer:
             stations.append(Station(
                 station_id=idx,
                 back_point=back_pt,
-                fore_point=fore_point,
+                fore_point=fore_pt,
                 dh_mean=dh_mean,
                 distance=dist_mean,
                 measurements=meas_list
