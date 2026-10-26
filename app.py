@@ -1,5 +1,5 @@
 """
-Geogeolevel v8.0 - Professional Dashboard + Engineering Style
+Geogeolevel v8.1 - Fixed imports + Streamlit 1.66 compatibility
 """
 
 import io
@@ -547,7 +547,7 @@ class LevelingAdjustment:
 
 
 # ============================================================
-# ЭКСПОРТ PDF СО ШТАМПОМ ГОСТ
+# ЭКСПОРТ PDF
 # ============================================================
 
 class PDFExporter:
@@ -603,7 +603,6 @@ class PDFExporter:
         normal_style = ParagraphStyle('Normal', parent=styles['Normal'],
                                      fontName='DejaVu' if use_cyrillic else 'Helvetica',
                                      fontSize=9)
-        small_style = ParagraphStyle('Small', parent=normal_style, fontSize=7)
         
         elements.append(Paragraph("ОТЧЁТ ПО НИВЕЛИРНОМУ ХОДУ" if use_cyrillic else "LEVELING REPORT", title_style))
         elements.append(Spacer(1, 5*mm))
@@ -696,14 +695,13 @@ class PDFExporter:
 
 
 # ============================================================
-# ИНТЕРФЕЙС С ВКЛАДКАМИ
+# ИНТЕРФЕЙС
 # ============================================================
 
 st.set_page_config(page_title="Geogeolevel", page_icon="", layout="wide")
 
 st.markdown("""
 <style>
-    /* ОСНОВНЫЕ СТИЛИ */
     body {
         background: linear-gradient(135deg, #0f1419 0%, #1a1f2e 100%);
         color: #e7e9ea;
@@ -726,25 +724,6 @@ st.markdown("""
         font-weight: 300;
     }
     
-    /* GLASSMORPHISM КАРТОЧКИ */
-    .glass-card {
-        background: rgba(255, 255, 255, 0.05);
-        backdrop-filter: blur(10px);
-        border: 1px solid rgba(255, 255, 255, 0.1);
-        border-radius: 15px;
-        padding: 1.5rem;
-        margin-bottom: 1rem;
-        box-shadow: 0 8px 32px rgba(0, 0, 0, 0.3);
-        transition: all 0.3s ease;
-    }
-    
-    .glass-card:hover {
-        transform: translateY(-3px);
-        box-shadow: 0 12px 40px rgba(102, 126, 234, 0.2);
-        border-color: rgba(102, 126, 234, 0.3);
-    }
-    
-    /* KPI КАРТОЧКИ */
     .kpi-card {
         background: linear-gradient(135deg, rgba(102, 126, 234, 0.15) 0%, rgba(118, 75, 162, 0.15) 100%);
         border: 1px solid rgba(102, 126, 234, 0.3);
@@ -768,24 +747,23 @@ st.markdown("""
         letter-spacing: 0.5px;
     }
     
-    /* ИНЖЕНЕРНЫЕ ТАБЛИЦЫ */
-    .dataframe {
-        border: 2px solid #2f3336;
-        border-radius: 8px;
-        overflow: hidden;
+    .glass-card {
+        background: rgba(255, 255, 255, 0.05);
+        backdrop-filter: blur(10px);
+        border: 1px solid rgba(255, 255, 255, 0.1);
+        border-radius: 15px;
+        padding: 1.5rem;
+        margin-bottom: 1rem;
+        box-shadow: 0 8px 32px rgba(0, 0, 0, 0.3);
+        transition: all 0.3s ease;
     }
     
-    .dataframe thead th {
-        background: #1a1f2e;
-        color: #667eea;
-        font-weight: 600;
-        text-transform: uppercase;
-        font-size: 0.85rem;
-        letter-spacing: 0.5px;
-        border-bottom: 2px solid #667eea;
+    .glass-card:hover {
+        transform: translateY(-3px);
+        box-shadow: 0 12px 40px rgba(102, 126, 234, 0.2);
+        border-color: rgba(102, 126, 234, 0.3);
     }
     
-    /* ВКЛАДКИ */
     .stTabs [data-baseweb="tab-list"] {
         gap: 8px;
         background: rgba(255, 255, 255, 0.05);
@@ -809,7 +787,6 @@ st.markdown("""
         box-shadow: 0 4px 15px rgba(102, 126, 234, 0.4);
     }
     
-    /* КНОПКИ */
     .stButton > button {
         background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
         color: white;
@@ -828,7 +805,6 @@ st.markdown("""
         box-shadow: 0 6px 20px rgba(102, 126, 234, 0.5);
     }
     
-    /* ИНФОРМАЦИОННЫЕ БЛОКИ */
     .info-box {
         background: rgba(0, 188, 212, 0.1);
         border-left: 4px solid #00bcd4;
@@ -865,7 +841,6 @@ st.markdown("""
         backdrop-filter: blur(10px);
     }
     
-    /* РАЗДЕЛИТЕЛИ */
     hr {
         border: none;
         height: 1px;
@@ -873,7 +848,6 @@ st.markdown("""
         margin: 1.5rem 0;
     }
     
-    /* АНИМАЦИИ */
     @keyframes fadeIn {
         from { opacity: 0; transform: translateY(10px); }
         to { opacity: 1; transform: translateY(0); }
@@ -883,22 +857,16 @@ st.markdown("""
         animation: fadeIn 0.4s ease;
     }
     
-    /* АДАПТИВНОСТЬ */
     @media (max-width: 768px) {
-        .main-header {
-            font-size: 2rem;
-        }
-        .kpi-value {
-            font-size: 1.5rem;
-        }
+        .main-header { font-size: 2rem; }
+        .kpi-value { font-size: 1.5rem; }
     }
 </style>
 """, unsafe_allow_html=True)
 
-# ШАПКА
 st.markdown("""
 <div style="display: flex; align-items: center; gap: 20px; margin-bottom: 1rem;">
-    <div style="font-size: 3.5rem; filter: drop-shadow(0 4px 8px rgba(102, 126, 234, 0.3));"></div>
+    <div style="font-size: 3.5rem; filter: drop-shadow(0 4px 8px rgba(102, 126, 234, 0.3));">📐</div>
     <div style="flex: 1;">
         <div class="main-header">Geogeolevel</div>
         <div class="subtitle">Professional Leveling Processing System · Trimble DiNi</div>
@@ -906,7 +874,6 @@ st.markdown("""
 </div>
 """, unsafe_allow_html=True)
 
-# SIDEBAR
 with st.sidebar:
     st.header("⚙️ Параметры")
     
@@ -984,9 +951,8 @@ try:
             } for p in result["points"]])
             all_dfs.append(df)
     
-    # ВКЛАДКИ
     tab_overview, tab_details, tab_quality, tab_profile, tab_export = st.tabs([
-        "📊 Обзор", "📋 Детали", "🔍 Качество", "📈 Профиль", "💾 Экспорт"
+        "📊 Обзор", "📋 Детали", "🔍 Качество", " Профиль", "💾 Экспорт"
     ])
     
     with tab_overview:
@@ -995,7 +961,6 @@ try:
         if all_results:
             result = all_results[0]
             
-            # KPI карточки
             col1, col2, col3, col4 = st.columns(4)
             
             with col1:
@@ -1010,7 +975,7 @@ try:
             with col2:
                 st.markdown(f"""
                 <div class="kpi-card">
-                    <div class="kpi-label">🔢 Станций</div>
+                    <div class="kpi-label"> Станций</div>
                     <div class="kpi-value">{result['n_stations']}</div>
                     <div style="font-size: 0.85rem; color: #8b98a5;">шт</div>
                 </div>
@@ -1034,13 +999,11 @@ try:
                 </div>
                 """, unsafe_allow_html=True)
             
-            # Статус
             if result["is_valid"]:
                 st.markdown('<div class="success-box">✅ Невязка в допуске — ход уравнен</div>', unsafe_allow_html=True)
             else:
                 st.markdown(f'<div class="error-box">🚨 {result["error"]}</div>', unsafe_allow_html=True)
             
-            # Формула
             st.markdown(f"""
             <div class="glass-card">
                 <div style="font-size: 0.9rem; color: #8b98a5; margin-bottom: 0.5rem;">📐 Формула допуска</div>
@@ -1053,9 +1016,8 @@ try:
         
         if all_dfs:
             combined_df = pd.concat(all_dfs, ignore_index=True)
-            st.dataframe(combined_df, use_container_width=True, hide_index=True)
+            st.dataframe(combined_df, width='stretch', hide_index=True)
             
-            # Статистика
             st.markdown("---")
             st.markdown("### 📈 Статистика")
             
@@ -1077,12 +1039,12 @@ try:
             warnings = [i for i in quality_issues if i.severity == 'warning']
             
             if errors:
-                st.markdown(f'<div class="error-box"> Найдено ошибок: **{len(errors)}**</div>', unsafe_allow_html=True)
+                st.markdown(f'<div class="error-box">⛔ Найдено ошибок: **{len(errors)}**</div>', unsafe_allow_html=True)
                 for issue in errors:
                     st.markdown(f"• **Станция {issue.station_id}** ({issue.point_from} → {issue.point_to}): {issue.message}")
             
             if warnings:
-                st.markdown(f'<div class="warning-box">⚠️ Найдено предупреждений: **{len(warnings)}**</div>', unsafe_allow_html=True)
+                st.markdown(f'<div class="warning-box">️ Найдено предупреждений: **{len(warnings)}**</div>', unsafe_allow_html=True)
                 for issue in warnings[:10]:
                     st.markdown(f"• {issue.message}")
                 if len(warnings) > 10:
@@ -1090,7 +1052,6 @@ try:
         else:
             st.markdown('<div class="success-box">✅ Контроль качества пройден — все измерения в допуске</div>', unsafe_allow_html=True)
         
-        # График распределения поправок
         if all_dfs:
             st.markdown("---")
             st.markdown("### 📊 Распределение поправок")
@@ -1109,7 +1070,7 @@ try:
                 template="plotly_dark",
                 height=400
             )
-            st.plotly_chart(fig, use_container_width=True)
+            st.plotly_chart(fig, width='stretch')
     
     with tab_profile:
         st.subheader("📈 Профиль хода")
@@ -1141,7 +1102,7 @@ try:
                 showlegend=False,
                 hovermode='x unified'
             )
-            st.plotly_chart(fig, use_container_width=True)
+            st.plotly_chart(fig, width='stretch')
     
     with tab_export:
         st.subheader("💾 Экспорт результатов")
@@ -1157,7 +1118,7 @@ try:
                 data=csv,
                 file_name=f"{job_name}_report.csv",
                 mime="text/csv",
-                use_container_width=True
+                width='stretch'
             )
             
             buffer = io.BytesIO()
@@ -1168,7 +1129,7 @@ try:
                 data=buffer.getvalue(),
                 file_name=f"{job_name}_report.xlsx",
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                use_container_width=True
+                width='stretch'
             )
             
             if all_results[0].get("points"):
@@ -1179,7 +1140,7 @@ try:
                         data=pdf_content,
                         file_name=f"{job_name}_report.pdf",
                         mime="application/pdf",
-                        use_container_width=True
+                        width='stretch'
                     )
                 except Exception as pdf_err:
                     st.warning(f"⚠️ Ошибка генерации PDF: {pdf_err}")
@@ -1192,7 +1153,7 @@ except Exception as e:
 st.divider()
 st.markdown(f"""
 <div style="display: flex; justify-content: space-between; color: #8b98a5; font-size: 0.85rem; padding: 1rem 0;">
-    <span>📐 Geogeolevel v8.0</span>
+    <span>📐 Geogeolevel v8.1</span>
     <span> {datetime.now().strftime('%d.%m.%Y')}</span>
     <span>⚡ Professional Edition</span>
 </div>
