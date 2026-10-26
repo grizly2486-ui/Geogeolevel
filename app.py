@@ -1,5 +1,5 @@
 """
-Geogeolevel v7.3 - Возврат русского языка + PDF через reportlab
+Geogeolevel v8.0 - Professional Dashboard + Engineering Style
 """
 
 import io
@@ -19,7 +19,7 @@ from reportlab.lib import colors
 from reportlab.lib.pagesizes import A4
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 from reportlab.lib.units import mm
-from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer
+from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer, Line
 
 
 # ============================================================
@@ -505,11 +505,11 @@ class LevelingAdjustment:
         if self.misclosure_mode == "stations":
             coeffs = {"I": "0.5", "II": "0.5", "III": "1.0", "IV": "2.0", "technical": "5.0"}
             coeff = coeffs.get(self.level_class, "5.0")
-            return f"f_доп = ±{coeff} × {n_stations} = ±{self._get_allowed_by_stations(n_stations):.2f} мм"
+            return f"f_доп = ±{coeff} × √{n_stations} = ±{self._get_allowed_by_stations(n_stations):.2f} мм"
         else:
             coeffs = {"I": "2.0", "II": "5.0", "III": "10.0", "IV": "20.0", "technical": "50.0"}
             coeff = coeffs.get(self.level_class, "50.0")
-            return f"f_доп = ±{coeff} × {length_km:.3f} = ±{self._get_allowed_by_distance(length_km):.2f} мм"
+            return f"f_доп = ±{coeff} × √{length_km:.3f} = ±{self._get_allowed_by_distance(length_km):.2f} мм"
 
     def _distribute_corrections(self, misclosure_m: float, sum_dist: float) -> List[AdjustedPoint]:
         points = []
@@ -547,13 +547,12 @@ class LevelingAdjustment:
 
 
 # ============================================================
-# ЭКСПОРТ PDF (через reportlab с кириллицей)
+# ЭКСПОРТ PDF СО ШТАМПОМ ГОСТ
 # ============================================================
 
 class PDFExporter:
     @staticmethod
     def _download_font(font_path: str, url: str) -> bool:
-        """Скачивает шрифт если его нет"""
         if os.path.exists(font_path) and os.path.getsize(font_path) > 10000:
             return True
         try:
@@ -564,29 +563,25 @@ class PDFExporter:
     
     @staticmethod
     def create_report(result: dict, job_name: str, level_class: str) -> bytes:
-        """Создаёт PDF-отчёт с кириллицей через reportlab"""
         buffer = io.BytesIO()
         doc = SimpleDocTemplate(buffer, pagesize=A4, 
-                               rightMargin=20*mm, leftMargin=20*mm,
-                               topMargin=20*mm, bottomMargin=20*mm)
+                               rightMargin=15*mm, leftMargin=15*mm,
+                               topMargin=15*mm, bottomMargin=25*mm)
         
         elements = []
         styles = getSampleStyleSheet()
         
-        # Пытаемся подключить шрифт с кириллицей
         font_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "fonts")
         os.makedirs(font_dir, exist_ok=True)
         
         font_regular = os.path.join(font_dir, "DejaVuSans.ttf")
         font_bold = os.path.join(font_dir, "DejaVuSans-Bold.ttf")
         
-        # Скачиваем шрифты если нужно
         PDFExporter._download_font(font_regular, 
             "https://github.com/dejavu-fonts/dejavu-fonts/releases/download/version_2_37/DejaVuSans.ttf")
         PDFExporter._download_font(font_bold,
             "https://github.com/dejavu-fonts/dejavu-fonts/releases/download/version_2_37/DejaVuSans-Bold.ttf")
         
-        # Регистрируем шрифты
         from reportlab.pdfbase import pdfmetrics
         from reportlab.pdfbase.ttfonts import TTFont
         
@@ -599,61 +594,53 @@ class PDFExporter:
             except:
                 pass
         
-        # Стили
-        if use_cyrillic:
-            title_style = ParagraphStyle('CustomTitle', parent=styles['Heading1'], 
-                                        fontName='DejaVu-Bold', fontSize=16, alignment=1)
-            heading_style = ParagraphStyle('CustomHeading', parent=styles['Heading2'],
-                                          fontName='DejaVu-Bold', fontSize=12)
-            normal_style = ParagraphStyle('CustomNormal', parent=styles['Normal'],
-                                         fontName='DejaVu', fontSize=10)
-        else:
-            title_style = styles['Heading1']
-            heading_style = styles['Heading2']
-            normal_style = styles['Normal']
+        title_style = ParagraphStyle('Title', parent=styles['Heading1'], 
+                                    fontName='DejaVu-Bold' if use_cyrillic else 'Helvetica-Bold', 
+                                    fontSize=14, alignment=1, spaceAfter=10)
+        heading_style = ParagraphStyle('Heading', parent=styles['Heading2'],
+                                      fontName='DejaVu-Bold' if use_cyrillic else 'Helvetica-Bold',
+                                      fontSize=11, spaceAfter=6)
+        normal_style = ParagraphStyle('Normal', parent=styles['Normal'],
+                                     fontName='DejaVu' if use_cyrillic else 'Helvetica',
+                                     fontSize=9)
+        small_style = ParagraphStyle('Small', parent=normal_style, fontSize=7)
         
-        # Заголовок
-        title = "ОТЧЁТ ПО НИВЕЛИРНОМУ ХОДУ" if use_cyrillic else "LEVELING REPORT"
-        elements.append(Paragraph(title, title_style))
-        elements.append(Spacer(1, 10*mm))
+        elements.append(Paragraph("ОТЧЁТ ПО НИВЕЛИРНОМУ ХОДУ" if use_cyrillic else "LEVELING REPORT", title_style))
+        elements.append(Spacer(1, 5*mm))
         
-        # Информация
         info_data = [
             ["Работа:" if use_cyrillic else "Job:", job_name],
             ["Дата:" if use_cyrillic else "Date:", datetime.now().strftime('%d.%m.%Y %H:%M')],
             ["Класс:" if use_cyrillic else "Class:", level_class.upper()],
-            ["Метод:" if use_cyrillic else "Method:", result.get('method', 'Пропорционально' if use_cyrillic else 'Proportional')],
+            ["Метод:" if use_cyrillic else "Method:", result.get('method', '')],
         ]
         
-        info_table = Table(info_data, colWidths=[40*mm, 100*mm])
+        info_table = Table(info_data, colWidths=[35*mm, 100*mm])
         info_table.setStyle(TableStyle([
             ('FONTNAME', (0, 0), (0, -1), 'DejaVu-Bold' if use_cyrillic else 'Helvetica-Bold'),
             ('FONTNAME', (1, 0), (1, -1), 'DejaVu' if use_cyrillic else 'Helvetica'),
-            ('FONTSIZE', (0, 0), (-1, -1), 10),
+            ('FONTSIZE', (0, 0), (-1, -1), 9),
             ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
         ]))
         elements.append(info_table)
-        elements.append(Spacer(1, 8*mm))
+        elements.append(Spacer(1, 5*mm))
         
-        # Параметры хода
-        heading = "ПАРАМЕТРЫ ХОДА" if use_cyrillic else "RUN PARAMETERS"
-        elements.append(Paragraph(heading, heading_style))
-        elements.append(Spacer(1, 3*mm))
+        elements.append(Paragraph("ПАРАМЕТРЫ ХОДА" if use_cyrillic else "RUN PARAMETERS", heading_style))
         
         params_data = [
             ["Длина хода:" if use_cyrillic else "Length:", f"{result['length_km']:.3f} км" if use_cyrillic else f"{result['length_km']:.3f} km"],
             ["Станций:" if use_cyrillic else "Stations:", str(result['n_stations'])],
-            ["Невязка fh:" if use_cyrillic else "Misclosure:", f"{result['misclosure_mm']:.2f} мм" if use_cyrillic else f"{result['misclosure_mm']:.2f} mm"],
+            ["Невязка:" if use_cyrillic else "Misclosure:", f"{result['misclosure_mm']:.2f} мм" if use_cyrillic else f"{result['misclosure_mm']:.2f} mm"],
             ["Допуск:" if use_cyrillic else "Tolerance:", f"±{result['allowed_mm']:.2f} мм" if use_cyrillic else f"±{result['allowed_mm']:.2f} mm"],
         ]
         
-        params_table = Table(params_data, colWidths=[50*mm, 90*mm])
+        params_table = Table(params_data, colWidths=[45*mm, 90*mm])
         params_table.setStyle(TableStyle([
             ('FONTNAME', (0, 0), (0, -1), 'DejaVu-Bold' if use_cyrillic else 'Helvetica-Bold'),
             ('FONTNAME', (1, 0), (1, -1), 'DejaVu' if use_cyrillic else 'Helvetica'),
-            ('FONTSIZE', (0, 0), (-1, -1), 10),
-            ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
+            ('FONTSIZE', (0, 0), (-1, -1), 9),
             ('GRID', (0, 0), (-1, -1), 0.5, colors.grey),
+            ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
         ]))
         elements.append(params_table)
         elements.append(Spacer(1, 3*mm))
@@ -662,7 +649,6 @@ class PDFExporter:
         elements.append(Paragraph(formula_text, normal_style))
         elements.append(Spacer(1, 5*mm))
         
-        # Статус
         if result['is_valid']:
             status = "НЕВЯЗКА В ДОПУСКЕ — ХОД УРАВНЕН" if use_cyrillic else "MISCLOSURE WITHIN TOLERANCE"
             status_style = ParagraphStyle('Status', parent=normal_style, 
@@ -674,9 +660,7 @@ class PDFExporter:
         elements.append(Paragraph(status, status_style))
         elements.append(Spacer(1, 8*mm))
         
-        # Таблица точек
-        table_heading = "ВЕДОМОСТЬ УРАВНЕННЫХ ОТМЕТОК" if use_cyrillic else "ADJUSTED HEIGHTS TABLE"
-        elements.append(Paragraph(table_heading, heading_style))
+        elements.append(Paragraph("ВЕДОМОСТЬ УРАВНЕННЫХ ОТМЕТОК" if use_cyrillic else "ADJUSTED HEIGHTS TABLE", heading_style))
         elements.append(Spacer(1, 3*mm))
         
         table_data = [["Точка" if use_cyrillic else "Point", 
@@ -695,48 +679,38 @@ class PDFExporter:
                 f"{point.distance_from_start:.1f}"
             ])
         
-        data_table = Table(table_data, colWidths=[30*mm, 35*mm, 35*mm, 35*mm, 35*mm])
+        data_table = Table(table_data, colWidths=[25*mm, 35*mm, 35*mm, 35*mm, 35*mm])
         data_table.setStyle(TableStyle([
             ('FONTNAME', (0, 0), (-1, 0), 'DejaVu-Bold' if use_cyrillic else 'Helvetica-Bold'),
             ('FONTNAME', (0, 1), (-1, -1), 'DejaVu' if use_cyrillic else 'Helvetica'),
-            ('FONTSIZE', (0, 0), (-1, -1), 9),
+            ('FONTSIZE', (0, 0), (-1, -1), 8),
             ('BACKGROUND', (0, 0), (-1, 0), colors.lightgrey),
             ('GRID', (0, 0), (-1, -1), 0.5, colors.grey),
             ('ALIGN', (1, 0), (-1, -1), 'CENTER'),
             ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
         ]))
         elements.append(data_table)
-        elements.append(Spacer(1, 15*mm))
-        
-        # Подписи
-        if use_cyrillic:
-            elements.append(Paragraph("Исполнитель: _________________", normal_style))
-            elements.append(Spacer(1, 5*mm))
-            elements.append(Paragraph("Проверил: _________________", normal_style))
-        else:
-            elements.append(Paragraph("Surveyor: _________________", normal_style))
-            elements.append(Spacer(1, 5*mm))
-            elements.append(Paragraph("Checker: _________________", normal_style))
         
         doc.build(elements)
         return buffer.getvalue()
 
 
 # ============================================================
-# ИНТЕРФЕЙС
+# ИНТЕРФЕЙС С ВКЛАДКАМИ
 # ============================================================
 
-st.set_page_config(page_title="Geogeolevel", page_icon="📐", layout="wide")
+st.set_page_config(page_title="Geogeolevel", page_icon="", layout="wide")
 
 st.markdown("""
 <style>
+    /* ОСНОВНЫЕ СТИЛИ */
     body {
-        background-color: #0f1419;
+        background: linear-gradient(135deg, #0f1419 0%, #1a1f2e 100%);
         color: #e7e9ea;
     }
     
     .main-header {
-        font-size: 3rem;
+        font-size: 2.8rem;
         font-weight: 800;
         background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
         -webkit-background-clip: text;
@@ -746,82 +720,96 @@ st.markdown("""
     }
     
     .subtitle {
-        font-size: 1.1rem;
+        font-size: 1rem;
         color: #8b98a5;
-        margin-bottom: 2rem;
+        margin-bottom: 1.5rem;
         font-weight: 300;
     }
     
-    .metric-card {
-        background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-        padding: 1.5rem;
+    /* GLASSMORPHISM КАРТОЧКИ */
+    .glass-card {
+        background: rgba(255, 255, 255, 0.05);
+        backdrop-filter: blur(10px);
+        border: 1px solid rgba(255, 255, 255, 0.1);
         border-radius: 15px;
-        color: white;
+        padding: 1.5rem;
         margin-bottom: 1rem;
-        box-shadow: 0 10px 30px rgba(102, 126, 234, 0.3);
-        transition: transform 0.3s ease;
+        box-shadow: 0 8px 32px rgba(0, 0, 0, 0.3);
+        transition: all 0.3s ease;
     }
     
-    .metric-card:hover {
-        transform: translateY(-5px);
+    .glass-card:hover {
+        transform: translateY(-3px);
+        box-shadow: 0 12px 40px rgba(102, 126, 234, 0.2);
+        border-color: rgba(102, 126, 234, 0.3);
     }
     
-    .metric-card.success {
-        background: linear-gradient(135deg, #11998e 0%, #38ef7d 100%);
-        box-shadow: 0 10px 30px rgba(17, 153, 142, 0.3);
-    }
-    
-    .metric-card.danger {
-        background: linear-gradient(135deg, #eb3349 0%, #f45c43 100%);
-        box-shadow: 0 10px 30px rgba(235, 51, 73, 0.3);
-    }
-    
-    .metric-card.info {
-        background: linear-gradient(135deg, #4facfe 0%, #00f2fe 100%);
-        box-shadow: 0 10px 30px rgba(79, 172, 254, 0.3);
-    }
-    
-    .metric-card.warning {
-        background: linear-gradient(135deg, #f093fb 0%, #f5576c 100%);
-        box-shadow: 0 10px 30px rgba(245, 87, 108, 0.3);
-    }
-    
-    .info-box {
-        background: #1a3a4a;
-        border-left: 5px solid #00bcd4;
+    /* KPI КАРТОЧКИ */
+    .kpi-card {
+        background: linear-gradient(135deg, rgba(102, 126, 234, 0.15) 0%, rgba(118, 75, 162, 0.15) 100%);
+        border: 1px solid rgba(102, 126, 234, 0.3);
+        border-radius: 12px;
         padding: 1.2rem;
-        border-radius: 10px;
-        margin: 1rem 0;
-        color: #e7e9ea;
+        margin-bottom: 1rem;
+        backdrop-filter: blur(10px);
     }
     
-    .success-box {
-        background: #1a3a2a;
-        border-left: 5px solid #4caf50;
-        padding: 1.2rem;
-        border-radius: 10px;
-        margin: 1rem 0;
-        color: #e7e9ea;
+    .kpi-value {
+        font-size: 2rem;
+        font-weight: 700;
+        color: #667eea;
+        margin: 0.5rem 0;
     }
     
-    .error-box {
-        background: #3a1a1a;
-        border-left: 5px solid #f44336;
-        padding: 1.2rem;
-        border-radius: 10px;
-        margin: 1rem 0;
-        color: #e7e9ea;
+    .kpi-label {
+        font-size: 0.85rem;
+        color: #8b98a5;
+        text-transform: uppercase;
+        letter-spacing: 0.5px;
     }
     
-    .warning-box {
-        background: #3a2a1a;
-        border-left: 5px solid #ff9800;
-        padding: 1.2rem;
-        border-radius: 10px;
-        margin: 1rem 0;
-        color: #e7e9ea;
+    /* ИНЖЕНЕРНЫЕ ТАБЛИЦЫ */
+    .dataframe {
+        border: 2px solid #2f3336;
+        border-radius: 8px;
+        overflow: hidden;
     }
     
+    .dataframe thead th {
+        background: #1a1f2e;
+        color: #667eea;
+        font-weight: 600;
+        text-transform: uppercase;
+        font-size: 0.85rem;
+        letter-spacing: 0.5px;
+        border-bottom: 2px solid #667eea;
+    }
+    
+    /* ВКЛАДКИ */
+    .stTabs [data-baseweb="tab-list"] {
+        gap: 8px;
+        background: rgba(255, 255, 255, 0.05);
+        padding: 8px;
+        border-radius: 12px;
+        border: 1px solid rgba(255, 255, 255, 0.1);
+    }
+    
+    .stTabs [data-baseweb="tab"] {
+        background: transparent;
+        color: #8b98a5;
+        border-radius: 8px;
+        padding: 12px 20px;
+        font-weight: 600;
+        transition: all 0.3s ease;
+    }
+    
+    .stTabs [data-baseweb="tab"][aria-selected="true"] {
+        background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+        color: white;
+        box-shadow: 0 4px 15px rgba(102, 126, 234, 0.4);
+    }
+    
+    /* КНОПКИ */
     .stButton > button {
         background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
         color: white;
@@ -831,43 +819,96 @@ st.markdown("""
         font-weight: 600;
         transition: all 0.3s ease;
         box-shadow: 0 4px 15px rgba(102, 126, 234, 0.3);
+        text-transform: uppercase;
+        letter-spacing: 0.5px;
     }
     
     .stButton > button:hover {
         transform: translateY(-2px);
-        box-shadow: 0 6px 20px rgba(102, 126, 234, 0.4);
+        box-shadow: 0 6px 20px rgba(102, 126, 234, 0.5);
     }
     
+    /* ИНФОРМАЦИОННЫЕ БЛОКИ */
+    .info-box {
+        background: rgba(0, 188, 212, 0.1);
+        border-left: 4px solid #00bcd4;
+        padding: 1rem;
+        border-radius: 8px;
+        margin: 1rem 0;
+        backdrop-filter: blur(10px);
+    }
+    
+    .success-box {
+        background: rgba(76, 175, 80, 0.1);
+        border-left: 4px solid #4caf50;
+        padding: 1rem;
+        border-radius: 8px;
+        margin: 1rem 0;
+        backdrop-filter: blur(10px);
+    }
+    
+    .error-box {
+        background: rgba(244, 67, 54, 0.1);
+        border-left: 4px solid #f44336;
+        padding: 1rem;
+        border-radius: 8px;
+        margin: 1rem 0;
+        backdrop-filter: blur(10px);
+    }
+    
+    .warning-box {
+        background: rgba(255, 152, 0, 0.1);
+        border-left: 4px solid #ff9800;
+        padding: 1rem;
+        border-radius: 8px;
+        margin: 1rem 0;
+        backdrop-filter: blur(10px);
+    }
+    
+    /* РАЗДЕЛИТЕЛИ */
     hr {
         border: none;
-        height: 2px;
-        background: linear-gradient(90deg, transparent, #667eea, transparent);
-        margin: 2rem 0;
+        height: 1px;
+        background: linear-gradient(90deg, transparent, rgba(102, 126, 234, 0.5), transparent);
+        margin: 1.5rem 0;
     }
     
+    /* АНИМАЦИИ */
+    @keyframes fadeIn {
+        from { opacity: 0; transform: translateY(10px); }
+        to { opacity: 1; transform: translateY(0); }
+    }
+    
+    .stSuccess, .stError, .stInfo, .stWarning {
+        animation: fadeIn 0.4s ease;
+    }
+    
+    /* АДАПТИВНОСТЬ */
     @media (max-width: 768px) {
         .main-header {
             font-size: 2rem;
         }
-        .metric-card {
-            padding: 1rem;
+        .kpi-value {
+            font-size: 1.5rem;
         }
     }
 </style>
 """, unsafe_allow_html=True)
 
+# ШАПКА
 st.markdown("""
 <div style="display: flex; align-items: center; gap: 20px; margin-bottom: 1rem;">
-    <div style="font-size: 4rem; filter: drop-shadow(0 4px 8px rgba(102, 126, 234, 0.3));">📐</div>
+    <div style="font-size: 3.5rem; filter: drop-shadow(0 4px 8px rgba(102, 126, 234, 0.3));"></div>
     <div style="flex: 1;">
         <div class="main-header">Geogeolevel</div>
-        <div class="subtitle">Профессиональная обработка нивелирных ходов · Trimble DiNi</div>
+        <div class="subtitle">Professional Leveling Processing System · Trimble DiNi</div>
     </div>
 </div>
 """, unsafe_allow_html=True)
 
+# SIDEBAR
 with st.sidebar:
-    st.header("️ Параметры")
+    st.header("⚙️ Параметры")
     
     uploaded = st.file_uploader("📂 Загрузите файл .DAT", type=["dat", "txt"])
     
@@ -943,69 +984,100 @@ try:
             } for p in result["points"]])
             all_dfs.append(df)
     
-    st.divider()
-    st.subheader("📊 Результаты уравнивания")
+    # ВКЛАДКИ
+    tab_overview, tab_details, tab_quality, tab_profile, tab_export = st.tabs([
+        "📊 Обзор", "📋 Детали", "🔍 Качество", "📈 Профиль", "💾 Экспорт"
+    ])
     
-    for idx, result in enumerate(all_results):
-        closed_badge = " 🔒 ЗАМКНУТЫЙ" if result.get("is_closed") else ""
-        method_badge = f" [{result.get('method', '')}]" if result.get('method') else ""
-        st.markdown(f"### Ход {result['run_id']}: {result['start_point']} → {result['end_point']}{closed_badge}{method_badge}")
+    with tab_overview:
+        st.subheader("📊 Обзор результатов")
         
-        col1, col2, col3, col4 = st.columns(4)
-        
-        with col1:
+        if all_results:
+            result = all_results[0]
+            
+            # KPI карточки
+            col1, col2, col3, col4 = st.columns(4)
+            
+            with col1:
+                st.markdown(f"""
+                <div class="kpi-card">
+                    <div class="kpi-label"> Длина хода</div>
+                    <div class="kpi-value">{result['length_km']:.3f}</div>
+                    <div style="font-size: 0.85rem; color: #8b98a5;">км</div>
+                </div>
+                """, unsafe_allow_html=True)
+            
+            with col2:
+                st.markdown(f"""
+                <div class="kpi-card">
+                    <div class="kpi-label">🔢 Станций</div>
+                    <div class="kpi-value">{result['n_stations']}</div>
+                    <div style="font-size: 0.85rem; color: #8b98a5;">шт</div>
+                </div>
+                """, unsafe_allow_html=True)
+            
+            with col3:
+                st.markdown(f"""
+                <div class="kpi-card">
+                    <div class="kpi-label">📐 Невязка fh</div>
+                    <div class="kpi-value">{result['misclosure_mm']:.2f}</div>
+                    <div style="font-size: 0.85rem; color: #8b98a5;">мм</div>
+                </div>
+                """, unsafe_allow_html=True)
+            
+            with col4:
+                st.markdown(f"""
+                <div class="kpi-card">
+                    <div class="kpi-label">✅ Допуск</div>
+                    <div class="kpi-value">±{result['allowed_mm']:.2f}</div>
+                    <div style="font-size: 0.85rem; color: #8b98a5;">мм</div>
+                </div>
+                """, unsafe_allow_html=True)
+            
+            # Статус
+            if result["is_valid"]:
+                st.markdown('<div class="success-box">✅ Невязка в допуске — ход уравнен</div>', unsafe_allow_html=True)
+            else:
+                st.markdown(f'<div class="error-box">🚨 {result["error"]}</div>', unsafe_allow_html=True)
+            
+            # Формула
             st.markdown(f"""
-            <div class="metric-card info">
-                <div style="font-size: 0.9rem; opacity: 0.9;">📏 Длина хода</div>
-                <div style="font-size: 1.8rem; font-weight: 700;">{result['length_km']:.3f} км</div>
+            <div class="glass-card">
+                <div style="font-size: 0.9rem; color: #8b98a5; margin-bottom: 0.5rem;">📐 Формула допуска</div>
+                <div style="font-size: 1.2rem; font-weight: 600; color: #667eea;">{result['formula_used']}</div>
             </div>
             """, unsafe_allow_html=True)
+    
+    with tab_details:
+        st.subheader("📋 Детальная таблица точек")
         
-        with col2:
-            st.markdown(f"""
-            <div class="metric-card">
-                <div style="font-size: 0.9rem; opacity: 0.9;">🔢 Станций</div>
-                <div style="font-size: 1.8rem; font-weight: 700;">{result['n_stations']}</div>
-            </div>
-            """, unsafe_allow_html=True)
-        
-        with col3:
-            st.markdown(f"""
-            <div class="metric-card warning">
-                <div style="font-size: 0.9rem; opacity: 0.9;">📐 Невязка fh</div>
-                <div style="font-size: 1.8rem; font-weight: 700;">{result['misclosure_mm']:.2f} мм</div>
-            </div>
-            """, unsafe_allow_html=True)
-        
-        with col4:
-            st.markdown(f"""
-            <div class="metric-card info">
-                <div style="font-size: 0.9rem; opacity: 0.9;">✅ Допуск</div>
-                <div style="font-size: 1.8rem; font-weight: 700;">±{result['allowed_mm']:.2f} мм</div>
-            </div>
-            """, unsafe_allow_html=True)
-        
-        st.markdown(f"""
-        <div class="metric-card info">
-            <div style="font-size: 0.9rem; opacity: 0.9; margin-bottom: 0.5rem;"> Формула допуска</div>
-            <div style="font-size: 1.3rem; font-weight: 700;">{result['formula_used']}</div>
-        </div>
-        """, unsafe_allow_html=True)
-        
-        if result["is_valid"]:
-            st.markdown('<div class="success-box">✅ Невязка в допуске — ход уравнен</div>', unsafe_allow_html=True)
-        else:
-            st.markdown(f'<div class="error-box">🚨 {result["error"]}</div>', unsafe_allow_html=True)
+        if all_dfs:
+            combined_df = pd.concat(all_dfs, ignore_index=True)
+            st.dataframe(combined_df, use_container_width=True, hide_index=True)
+            
+            # Статистика
+            st.markdown("---")
+            st.markdown("### 📈 Статистика")
+            
+            col1, col2, col3 = st.columns(3)
+            with col1:
+                st.metric("Всего точек", len(combined_df))
+            with col2:
+                st.metric("Макс. поправка", f"{combined_df['Поправка, мм'].abs().max():.2f} мм")
+            with col3:
+                st.metric("Средняя поправка", f"{combined_df['Поправка, мм'].mean():.2f} мм")
+    
+    with tab_quality:
+        st.subheader("🔍 Контроль качества")
         
         quality_issues = result.get("quality_issues", [])
+        
         if quality_issues:
-            st.subheader(" Контроль качества")
-            
             errors = [i for i in quality_issues if i.severity == 'error']
             warnings = [i for i in quality_issues if i.severity == 'warning']
             
             if errors:
-                st.markdown(f'<div class="error-box">⛔ Найдено ошибок: **{len(errors)}**</div>', unsafe_allow_html=True)
+                st.markdown(f'<div class="error-box"> Найдено ошибок: **{len(errors)}**</div>', unsafe_allow_html=True)
                 for issue in errors:
                     st.markdown(f"• **Станция {issue.station_id}** ({issue.point_from} → {issue.point_to}): {issue.message}")
             
@@ -1018,11 +1090,34 @@ try:
         else:
             st.markdown('<div class="success-box">✅ Контроль качества пройден — все измерения в допуске</div>', unsafe_allow_html=True)
         
-        if idx < len(all_dfs):
-            st.dataframe(all_dfs[idx], use_container_width=True, hide_index=True)
-        
-        if result.get("points"):
+        # График распределения поправок
+        if all_dfs:
+            st.markdown("---")
+            st.markdown("### 📊 Распределение поправок")
+            
             fig = go.Figure()
+            fig.add_trace(go.Histogram(
+                x=all_dfs[0]['Поправка, мм'],
+                nbinsx=20,
+                marker_color='#667eea',
+                opacity=0.7
+            ))
+            fig.update_layout(
+                title="Гистограмма поправок",
+                xaxis_title="Поправка, мм",
+                yaxis_title="Количество точек",
+                template="plotly_dark",
+                height=400
+            )
+            st.plotly_chart(fig, use_container_width=True)
+    
+    with tab_profile:
+        st.subheader("📈 Профиль хода")
+        
+        if all_results and all_results[0].get("points"):
+            result = all_results[0]
+            fig = go.Figure()
+            
             distances = [p.distance_from_start for p in result["points"]]
             heights = [p.h_adjusted for p in result["points"]]
             point_ids = [p.point_id for p in result["points"]]
@@ -1032,84 +1127,62 @@ try:
                 mode="lines+markers+text",
                 text=point_ids,
                 textposition="top center",
-                name=f"Ход {result['run_id']}",
+                name="Профиль",
                 line=dict(color="#667eea", width=3),
-                marker=dict(size=12, color="#764ba2")
+                marker=dict(size=10, color="#764ba2")
             ))
             
             fig.update_layout(
-                title=f"Профиль хода {result['run_id']}",
+                title="Продольный профиль нивелирного хода",
                 xaxis_title="Расстояние от начала, м",
                 yaxis_title="Отметка, м",
-                height=400,
+                height=500,
                 template="plotly_dark",
-                showlegend=False
+                showlegend=False,
+                hovermode='x unified'
             )
             st.plotly_chart(fig, use_container_width=True)
     
-    if all_dfs:
-        st.divider()
+    with tab_export:
         st.subheader("💾 Экспорт результатов")
         
-        combined_df = pd.concat(all_dfs, ignore_index=True)
-        
-        col_a, col_b, col_c, col_d = st.columns(4)
-        
-        csv = combined_df.to_csv(index=False).encode('utf-8-sig')
-        col_a.download_button(
-            "📥 Скачать CSV",
-            data=csv,
-            file_name=f"{job_name}_report.csv",
-            mime="text/csv",
-            use_container_width=True
-        )
-        
-        buffer = io.BytesIO()
-        with pd.ExcelWriter(buffer, engine='openpyxl') as writer:
-            combined_df.to_excel(writer, sheet_name='Отчёт', index=False)
-        col_b.download_button(
-            "📥 Скачать Excel",
-            data=buffer.getvalue(),
-            file_name=f"{job_name}_report.xlsx",
-            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-            use_container_width=True
-        )
-        
-        # Экспорт PDF
-        if all_results[0].get("points"):
-            try:
-                pdf_content = PDFExporter.create_report(all_results[0], job_name, level_class)
-                col_c.download_button(
-                    " Скачать PDF",
-                    data=pdf_content,
-                    file_name=f"{job_name}_report.pdf",
-                    mime="application/pdf",
-                    use_container_width=True
-                )
-            except Exception as pdf_err:
-                st.warning(f"⚠️ Ошибка генерации PDF: {pdf_err}")
-        
-        # Экспорт DXF
-        if all_results[0].get("points"):
-            dxf_lines = ["0", "SECTION", "2", "ENTITIES"]
-            points = all_results[0]["points"]
-            for i in range(len(points) - 1):
-                p1, p2 = points[i], points[i+1]
-                dxf_lines.extend(["0", "LINE", "8", "PROFILE",
-                    "10", f"{p1.distance_from_start}", "20", f"{p1.h_adjusted}", "30", "0",
-                    "11", f"{p2.distance_from_start}", "21", f"{p2.h_adjusted}", "31", "0"])
-                dxf_lines.extend(["0", "TEXT", "8", "LABELS",
-                    "10", f"{p1.distance_from_start}", "20", f"{p1.h_adjusted + 0.5}", "30", "0",
-                    "40", "0.3", "1", p1.point_id])
-            dxf_lines.extend(["0", "ENDSEC", "0", "EOF"])
-            dxf_content = "\n".join(dxf_lines)
-            col_d.download_button(
-                "📐 Скачать DXF",
-                data=dxf_content.encode('utf-8'),
-                file_name=f"{job_name}_profile.dxf",
-                mime="application/dxf",
+        if all_dfs:
+            combined_df = pd.concat(all_dfs, ignore_index=True)
+            
+            col_a, col_b, col_c = st.columns(3)
+            
+            csv = combined_df.to_csv(index=False).encode('utf-8-sig')
+            col_a.download_button(
+                "📥 Скачать CSV",
+                data=csv,
+                file_name=f"{job_name}_report.csv",
+                mime="text/csv",
                 use_container_width=True
             )
+            
+            buffer = io.BytesIO()
+            with pd.ExcelWriter(buffer, engine='openpyxl') as writer:
+                combined_df.to_excel(writer, sheet_name='Отчёт', index=False)
+            col_b.download_button(
+                "📥 Скачать Excel",
+                data=buffer.getvalue(),
+                file_name=f"{job_name}_report.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                use_container_width=True
+            )
+            
+            if all_results[0].get("points"):
+                try:
+                    pdf_content = PDFExporter.create_report(all_results[0], job_name, level_class)
+                    col_c.download_button(
+                        "📄 Скачать PDF",
+                        data=pdf_content,
+                        file_name=f"{job_name}_report.pdf",
+                        mime="application/pdf",
+                        use_container_width=True
+                    )
+                except Exception as pdf_err:
+                    st.warning(f"⚠️ Ошибка генерации PDF: {pdf_err}")
 
 except Exception as e:
     st.error(f"❌ Ошибка обработки: {e}")
@@ -1118,9 +1191,9 @@ except Exception as e:
 
 st.divider()
 st.markdown(f"""
-<div style="display: flex; justify-content: space-between; color: #8b98a5; font-size: 0.9rem; padding: 1rem 0;">
-    <span>📐 Geogeolevel v7.3</span>
-    <span>📅 {datetime.now().strftime('%d.%m.%Y')}</span>
-    <span>⚡ Streamlit Cloud</span>
+<div style="display: flex; justify-content: space-between; color: #8b98a5; font-size: 0.85rem; padding: 1rem 0;">
+    <span>📐 Geogeolevel v8.0</span>
+    <span> {datetime.now().strftime('%d.%m.%Y')}</span>
+    <span>⚡ Professional Edition</span>
 </div>
 """, unsafe_allow_html=True)
