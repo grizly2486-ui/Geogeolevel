@@ -1,6 +1,5 @@
 """
-Geogeolevel v4.1 - Обработка нивелирных ходов
-Исправлена ошибка fore_point
+Geogeolevel v4.2 - Исправлен парсер для схемы BFFB (ЗППЗ)
 """
 
 import io
@@ -20,8 +19,17 @@ import streamlit as st
 # ============================================================
 
 @dataclass
+class RawReading:
+    """Один отсчет по рейке"""
+    point: str
+    reading: float
+    distance: float
+    reading_type: str  # 'Rb' или 'Rf'
+
+
+@dataclass
 class RawMeasurement:
-    """Сырое измерение с станции"""
+    """Превышение между двумя точками"""
     back_point: str
     fore_point: str
     back_reading: float
@@ -65,7 +73,7 @@ class AdjustedPoint:
 # ============================================================
 
 class TrimbleDiniBFFBParser:
-    """Парсер для формата Trimble DiNi Start-Line BFFB"""
+    """Парсер для формата Trimble DiNi Start-Line BFFB (ЗППЗ)"""
     
     def __init__(self, raw_bytes: bytes):
         self.raw_bytes = raw_bytes
@@ -74,10 +82,11 @@ class TrimbleDiniBFFBParser:
         text = self._decode_text()
         lines = text.splitlines()
         
-        measurements = []
+        readings = []  # Все отсчеты по порядку
         points_with_heights = {}
         job_name = "Unknown Job"
         
+        # Извлекаем имя файла
         for line in lines[:5]:
             if 'TO' in line and '.dat' in line.lower():
                 match = re.search(r'TO\s+(\S+\.dat)', line, re.IGNORECASE)
@@ -85,15 +94,13 @@ class TrimbleDiniBFFBParser:
                     job_name = match.group(1).replace('.dat', '')
                 break
         
-        current_back_point = None
-        current_back_reading = None
-        current_back_dist = None
-        
+        # Собираем все отсчеты Rb и Rf
         for line in lines:
             line = line.strip()
             if not line:
                 continue
             
+            # Отметки точек (Z)
             z_match = re.search(r'\|Z\s+([+-]?\d+\.?\d*)\s*m\s*\|', line)
             if z_match:
                 point_match = re.search(r'\|KD1\s+(\S+)\s+', line)
@@ -103,37 +110,97 @@ class TrimbleDiniBFFBParser:
                     points_with_heights[point_name] = height
                 continue
             
+            # Отсчет по задней рейке (Rb)
             rb_match = re.search(r'\|Rb\s+([+-]?\d+\.?\d*)\s*m\s*\|HD\s+([+-]?\d+\.?\d*)\s*m\s*\|', line)
             if rb_match:
                 point_match = re.search(r'\|KD1\s+(\S+)\s+', line)
                 if point_match:
-                    current_back_point = point_match.group(1)
-                    current_back_reading = float(rb_match.group(1))
-                    current_back_dist = float(rb_match.group(2))
+                    readings.append(RawReading(
+                        point=point_match.group(1),
+                        reading=float(rb_match.group(1)),
+                        distance=float(rb_match.group(2)),
+                        reading_type='Rb'
+                    ))
                 continue
             
+            # Отсчет по передней рейке (Rf)
             rf_match = re.search(r'\|Rf\s+([+-]?\d+\.?\d*)\s*m\s*\|HD\s+([+-]?\d+\.?\d*)\s*m\s*\|', line)
-            if rf_match and current_back_point and current_back_reading is not None:
+            if rf_match:
                 point_match = re.search(r'\|KD1\s+(\S+)\s+', line)
                 if point_match:
-                    fore_point = point_match.group(1)
-                    fore_reading = float(rf_match.group(1))
-                    fore_dist = float(rf_match.group(2))
-                    
-                    measurements.append(RawMeasurement(
-                        back_point=current_back_point,
-                        fore_point=fore_point,
-                        back_reading=current_back_reading,
-                        fore_reading=fore_reading,
-                        back_dist=current_back_dist,
-                        fore_dist=fore_dist
+                    readings.append(RawReading(
+                        point=point_match.group(1),
+                        reading=float(rf_match.group(1)),
+                        distance=float(rf_match.group(2)),
+                        reading_type='Rf'
                     ))
-                    
-                    current_back_point = None
-                    current_back_reading = None
-                    current_back_dist = None
+        
+        # Группируем отсчеты по станциям (схема BFFB: Rb, Rf, Rf, Rb)
+        measurements = self._group_readings_into_measurements(readings)
         
         return job_name, measurements, points_with_heights
+
+    def _group_readings_into_measurements(self, readings: List[RawReading]) -> List[RawMeasurement]:
+        """
+        Группирует отсчеты по станциям схемы BFFB.
+        Ожидает последовательность: Rb(A), Rf(B), Rf(B), Rb(A)
+        Создает два измерения и возвращает их.
+        """
+        measurements = []
+        i = 0
+        
+        while i < len(readings):
+            # Ищем начало станции (Rb)
+            if readings[i].reading_type == 'Rb':
+                rb1 = readings[i]
+                
+                # Ищем первый Rf
+                if i + 1 < len(readings) and readings[i + 1].reading_type == 'Rf':
+                    rf1 = readings[i + 1]
+                    
+                    # Создаем первое измерение
+                    measurements.append(RawMeasurement(
+                        back_point=rb1.point,
+                        fore_point=rf1.point,
+                        back_reading=rb1.reading,
+                        fore_reading=rf1.reading,
+                        back_dist=rb1.distance,
+                        fore_dist=rf1.distance
+                    ))
+                    
+                    # Проверяем, есть ли повторные отсчеты (Rf, Rb)
+                    if i + 2 < len(readings) and readings[i + 2].reading_type == 'Rf':
+                        rf2 = readings[i + 2]
+                        
+                        # Второй Rf должен быть на той же точке
+                        if rf2.point == rf1.point and i + 3 < len(readings) and readings[i + 3].reading_type == 'Rb':
+                            rb2 = readings[i + 3]
+                            
+                            # Создаем второе измерение (контрольное)
+                            measurements.append(RawMeasurement(
+                                back_point=rb2.point,
+                                fore_point=rf2.point,
+                                back_reading=rb2.reading,
+                                fore_reading=rf2.reading,
+                                back_dist=rb2.distance,
+                                fore_dist=rf2.distance
+                            ))
+                            
+                            i += 4  # Пропускаем все 4 отсчета
+                            continue
+                        else:
+                            i += 2  # Только первая пара
+                            continue
+                    else:
+                        i += 2  # Только первая пара
+                        continue
+                else:
+                    i += 1
+                    continue
+            else:
+                i += 1
+        
+        return measurements
 
     def _decode_text(self) -> str:
         for enc in ['utf-8', 'windows-1251', 'cp1251', 'latin-1']:
@@ -156,6 +223,7 @@ class RunAnalyzer:
         self.points_with_heights = points_with_heights
     
     def group_into_stations(self) -> List[Station]:
+        """Группирует измерения по станциям и усредняет"""
         station_groups = defaultdict(list)
         
         for m in self.measurements:
@@ -182,6 +250,7 @@ class RunAnalyzer:
         return stations
     
     def identify_runs(self, stations: List[Station]) -> List[LevelingRun]:
+        """Определяет отдельные ходы на основе связности"""
         if not stations:
             return []
         
@@ -224,6 +293,7 @@ class RunAnalyzer:
         return runs
     
     def _order_stations(self, stations: List[Station], points: Set[str]) -> List[Station]:
+        """Упорядочивает станции в правильном порядке хода"""
         if not stations:
             return []
         
@@ -424,7 +494,7 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-st.markdown('<div class="main-header"> Geogeolevel</div>', unsafe_allow_html=True)
+st.markdown('<div class="main-header">📐 Geogeolevel</div>', unsafe_allow_html=True)
 st.markdown('<div class="subtitle">Обработка нивелирных ходов · Trimble DiNi BFFB · Уравнивание · Отчёты</div>', unsafe_allow_html=True)
 
 with st.sidebar:
@@ -462,7 +532,7 @@ with st.sidebar:
     h_end_override = st.number_input("H конечной (м, необязательно)", value=None, format="%.3f", key="h_end")
 
 if not uploaded:
-    st.info("👈 Загрузите файл .DAT в панели слева для начала работы")
+    st.info(" Загрузите файл .DAT в панели слева для начала работы")
     st.stop()
 
 try:
@@ -475,7 +545,7 @@ try:
     stations = analyzer.group_into_stations()
     runs = analyzer.identify_runs(stations)
     
-    st.info(f"📊 Найдено: **{len(measurements)}** измерений, **{len(stations)}** станций, **{len(runs)}** ход(ов)")
+    st.info(f" Найдено: **{len(measurements)}** измерений (включая контрольные), **{len(stations)}** станций, **{len(runs)}** ход(ов)")
     
     if points_with_heights:
         with st.expander("📍 Найденные исходные отметки"):
@@ -587,4 +657,4 @@ except Exception as e:
     st.code(traceback.format_exc())
 
 st.divider()
-st.caption("Geogeolevel v4.1 · Обработка нивелирных ходов")
+st.caption("Geogeolevel v4.2 · Обработка нивелирных ходов · Схема BFFB")
