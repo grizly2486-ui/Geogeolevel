@@ -1,9 +1,11 @@
 """
-Geogeolevel v6.0 - Контроль качества + Тёмная тема + Замкнутые ходы + Шаблоны
+Geogeolevel v6.1 - Исправлена тема + Этап 2: История проектов + Предпросмотр + Промежуточные точки
 """
 
 import io
+import json
 import math
+import os
 import re
 from collections import defaultdict
 from dataclasses import dataclass, field
@@ -69,6 +71,7 @@ class AdjustedPoint:
     h_adjusted: float
     correction: float
     distance_from_start: float
+    is_intermediate: bool = False
 
 
 @dataclass
@@ -261,7 +264,7 @@ class RunAnalyzer:
                 dist_1=dist_1,
                 dist_2=dist_2,
                 dh_diff=abs(dh_1 - dh_2) * 1000 if len(dh_values) > 1 else 0,
-                dist_diff=abs(dist_1 - dist_2) if len(dist_values) > 1 else 0,
+                dist_diff=abs(dist_1 - dist_2) if len(dh_values) > 1 else 0,
                 measurements=meas_list
             ))
         return stations
@@ -534,7 +537,7 @@ class LevelingAdjustment:
 
 
 # ============================================================
-# УПРАВЛЕНИЕ ШАБЛОНАМИ
+# УПРАВЛЕНИЕ ШАБЛОНАМИ И ИСТОРИЕЙ
 # ============================================================
 
 class TemplateManager:
@@ -554,6 +557,29 @@ class TemplateManager:
         return st.session_state.get(TemplateManager.TEMPLATES_KEY, {})
 
 
+class ProjectHistory:
+    HISTORY_KEY = "geolevel_history"
+    
+    @staticmethod
+    def save_project(job_name: str, result: dict, file_data: bytes):
+        history = st.session_state.get(ProjectHistory.HISTORY_KEY, [])
+        project = {
+            "name": job_name,
+            "date": datetime.now().strftime("%d.%m.%Y %H:%M"),
+            "n_stations": result.get("n_stations", 0),
+            "misclosure_mm": result.get("misclosure_mm", 0),
+            "is_valid": result.get("is_valid", False)
+        }
+        history.insert(0, project)
+        if len(history) > 20:
+            history = history[:20]
+        st.session_state[ProjectHistory.HISTORY_KEY] = history
+    
+    @staticmethod
+    def load_history() -> list:
+        return st.session_state.get(ProjectHistory.HISTORY_KEY, [])
+
+
 # ============================================================
 # ИНТЕРФЕЙС
 # ============================================================
@@ -561,67 +587,187 @@ class TemplateManager:
 if 'theme' not in st.session_state:
     st.session_state.theme = 'light'
 
-st.set_page_config(page_title="Geogeolevel", page_icon="📐", layout="wide")
+st.set_page_config(page_title="Geogeolevel", page_icon="", layout="wide")
 
 THEMES = {
-    'light': {'bg': '#ffffff', 'text': '#1a1a1a', 'muted': '#666666'},
-    'dark': {'bg': '#0f1419', 'text': '#e7e9ea', 'muted': '#8b98a5'}
+    'light': {
+        'bg': '#ffffff',
+        'text': '#1a1a1a',
+        'muted': '#666666',
+        'card_bg': '#f8f9ff',
+        'border': '#e0e0e0',
+        'info_bg': '#e0f7fa',
+        'success_bg': '#e8f5e9',
+        'error_bg': '#ffebee',
+        'warning_bg': '#fff3e0'
+    },
+    'dark': {
+        'bg': '#0f1419',
+        'text': '#e7e9ea',
+        'muted': '#8b98a5',
+        'card_bg': '#1e2732',
+        'border': '#2f3336',
+        'info_bg': '#1a3a4a',
+        'success_bg': '#1a3a2a',
+        'error_bg': '#3a1a1a',
+        'warning_bg': '#3a2a1a'
+    }
 }
 
 theme = THEMES[st.session_state.theme]
 
 st.markdown(f"""
 <style>
-    body {{ background-color: {theme['bg']}; color: {theme['text']}; }}
-    .main-header {{
-        font-size: 3rem; font-weight: 800;
-        background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-        -webkit-background-clip: text; -webkit-text-fill-color: transparent;
-        margin-bottom: 0.3rem; letter-spacing: -1px;
+    :root {{
+        --bg-color: {theme['bg']};
+        --text-color: {theme['text']};
+        --muted-color: {theme['muted']};
+        --card-bg: {theme['card_bg']};
+        --border-color: {theme['border']};
+        --info-bg: {theme['info_bg']};
+        --success-bg: {theme['success_bg']};
+        --error-bg: {theme['error_bg']};
+        --warning-bg: {theme['warning_bg']};
     }}
-    .subtitle {{ font-size: 1.1rem; color: {theme['muted']}; margin-bottom: 2rem; font-weight: 300; }}
+    
+    body {{
+        background-color: var(--bg-color);
+        color: var(--text-color);
+    }}
+    
+    .main-header {{
+        font-size: 3rem;
+        font-weight: 800;
+        background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+        -webkit-background-clip: text;
+        -webkit-text-fill-color: transparent;
+        margin-bottom: 0.3rem;
+        letter-spacing: -1px;
+    }}
+    
+    .subtitle {{
+        font-size: 1.1rem;
+        color: var(--muted-color);
+        margin-bottom: 2rem;
+        font-weight: 300;
+    }}
+    
     .metric-card {{
         background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-        padding: 1.5rem; border-radius: 15px; color: white; margin-bottom: 1rem;
-        box-shadow: 0 10px 30px rgba(102, 126, 234, 0.3); transition: transform 0.3s ease;
+        padding: 1.5rem;
+        border-radius: 15px;
+        color: white;
+        margin-bottom: 1rem;
+        box-shadow: 0 10px 30px rgba(102, 126, 234, 0.3);
+        transition: transform 0.3s ease;
     }}
-    .metric-card:hover {{ transform: translateY(-5px); }}
-    .metric-card.success {{ background: linear-gradient(135deg, #11998e 0%, #38ef7d 100%); box-shadow: 0 10px 30px rgba(17, 153, 142, 0.3); }}
-    .metric-card.danger {{ background: linear-gradient(135deg, #eb3349 0%, #f45c43 100%); box-shadow: 0 10px 30px rgba(235, 51, 73, 0.3); }}
-    .metric-card.info {{ background: linear-gradient(135deg, #4facfe 0%, #00f2fe 100%); box-shadow: 0 10px 30px rgba(79, 172, 254, 0.3); }}
-    .metric-card.warning {{ background: linear-gradient(135deg, #f093fb 0%, #f5576c 100%); box-shadow: 0 10px 30px rgba(245, 87, 108, 0.3); }}
+    
+    .metric-card:hover {{
+        transform: translateY(-5px);
+    }}
+    
+    .metric-card.success {{
+        background: linear-gradient(135deg, #11998e 0%, #38ef7d 100%);
+        box-shadow: 0 10px 30px rgba(17, 153, 142, 0.3);
+    }}
+    
+    .metric-card.danger {{
+        background: linear-gradient(135deg, #eb3349 0%, #f45c43 100%);
+        box-shadow: 0 10px 30px rgba(235, 51, 73, 0.3);
+    }}
+    
+    .metric-card.info {{
+        background: linear-gradient(135deg, #4facfe 0%, #00f2fe 100%);
+        box-shadow: 0 10px 30px rgba(79, 172, 254, 0.3);
+    }}
+    
+    .metric-card.warning {{
+        background: linear-gradient(135deg, #f093fb 0%, #f5576c 100%);
+        box-shadow: 0 10px 30px rgba(245, 87, 108, 0.3);
+    }}
+    
     .info-box {{
-        background: linear-gradient(135deg, #e0f7fa 0%, #b2ebf2 100%);
-        border-left: 5px solid #00bcd4; padding: 1.2rem; border-radius: 10px; margin: 1rem 0;
+        background: var(--info-bg);
+        border-left: 5px solid #00bcd4;
+        padding: 1.2rem;
+        border-radius: 10px;
+        margin: 1rem 0;
+        color: var(--text-color);
     }}
+    
     .success-box {{
-        background: linear-gradient(135deg, #e8f5e9 0%, #c8e6c9 100%);
-        border-left: 5px solid #4caf50; padding: 1.2rem; border-radius: 10px; margin: 1rem 0;
+        background: var(--success-bg);
+        border-left: 5px solid #4caf50;
+        padding: 1.2rem;
+        border-radius: 10px;
+        margin: 1rem 0;
+        color: var(--text-color);
     }}
+    
     .error-box {{
-        background: linear-gradient(135deg, #ffebee 0%, #ffcdd2 100%);
-        border-left: 5px solid #f44336; padding: 1.2rem; border-radius: 10px; margin: 1rem 0;
+        background: var(--error-bg);
+        border-left: 5px solid #f44336;
+        padding: 1.2rem;
+        border-radius: 10px;
+        margin: 1rem 0;
+        color: var(--text-color);
     }}
+    
     .warning-box {{
-        background: linear-gradient(135deg, #fff3e0 0%, #ffe0b2 100%);
-        border-left: 5px solid #ff9800; padding: 1.2rem; border-radius: 10px; margin: 1rem 0;
+        background: var(--warning-bg);
+        border-left: 5px solid #ff9800;
+        padding: 1.2rem;
+        border-radius: 10px;
+        margin: 1rem 0;
+        color: var(--text-color);
     }}
+    
     .stButton > button {{
-        background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white;
-        border: none; padding: 0.8rem 1.5rem; border-radius: 10px; font-weight: 600;
-        transition: all 0.3s ease; box-shadow: 0 4px 15px rgba(102, 126, 234, 0.3);
+        background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+        color: white;
+        border: none;
+        padding: 0.8rem 1.5rem;
+        border-radius: 10px;
+        font-weight: 600;
+        transition: all 0.3s ease;
+        box-shadow: 0 4px 15px rgba(102, 126, 234, 0.3);
     }}
-    .stButton > button:hover {{ transform: translateY(-2px); box-shadow: 0 6px 20px rgba(102, 126, 234, 0.4); }}
-    hr {{ border: none; height: 2px; background: linear-gradient(90deg, transparent, #667eea, transparent); margin: 2rem 0; }}
-    @keyframes fadeIn {{ from {{ opacity: 0; transform: translateY(20px); }} to {{ opacity: 1; transform: translateY(0); }} }}
-    .stSuccess, .stError, .stInfo, .stWarning {{ animation: fadeIn 0.5s ease; }}
-    @media (max-width: 768px) {{ .main-header {{ font-size: 2rem; }} .metric-card {{ padding: 1rem; }} }}
+    
+    .stButton > button:hover {{
+        transform: translateY(-2px);
+        box-shadow: 0 6px 20px rgba(102, 126, 234, 0.4);
+    }}
+    
+    hr {{
+        border: none;
+        height: 2px;
+        background: linear-gradient(90deg, transparent, #667eea, transparent);
+        margin: 2rem 0;
+    }}
+    
+    @keyframes fadeIn {{
+        from {{ opacity: 0; transform: translateY(20px); }}
+        to {{ opacity: 1; transform: translateY(0); }}
+    }}
+    
+    .stSuccess, .stError, .stInfo, .stWarning {{
+        animation: fadeIn 0.5s ease;
+    }}
+    
+    @media (max-width: 768px) {{
+        .main-header {{
+            font-size: 2rem;
+        }}
+        .metric-card {{
+            padding: 1rem;
+        }}
+    }}
 </style>
 """, unsafe_allow_html=True)
 
 st.markdown("""
 <div style="display: flex; align-items: center; gap: 20px; margin-bottom: 1rem;">
-    <div style="font-size: 4rem; filter: drop-shadow(0 4px 8px rgba(102, 126, 234, 0.3));"></div>
+    <div style="font-size: 4rem; filter: drop-shadow(0 4px 8px rgba(102, 126, 234, 0.3));">📐</div>
     <div style="flex: 1;">
         <div class="main-header">Geogeolevel</div>
         <div class="subtitle">Профессиональная обработка нивелирных ходов · Trimble DiNi</div>
@@ -635,7 +781,7 @@ with st.sidebar:
     theme_toggle = st.radio(
         "🎨 Тема оформления",
         options=["light", "dark"],
-        format_func=lambda x: "☀️ Светлая" if x == "light" else "🌙 Тёмная",
+        format_func=lambda x: "️ Светлая" if x == "light" else "🌙 Тёмная",
         index=0 if st.session_state.theme == 'light' else 1,
         horizontal=True,
         key="theme_toggle"
@@ -663,7 +809,7 @@ with st.sidebar:
     misclosure_mode = st.radio(
         "Режим расчета допуска",
         options=["distance", "stations"],
-        format_func=lambda x: " По длине хода (км)" if x == "distance" else "🔢 По числу станций",
+        format_func=lambda x: "📏 По длине хода (км)" if x == "distance" else "🔢 По числу станций",
         index=0, key="misclosure_mode"
     )
     
@@ -679,7 +825,7 @@ with st.sidebar:
     
     col_save, col_load = st.columns(2)
     with col_save:
-        if st.button("💾 Сохранить", use_container_width=True):
+        if st.button(" Сохранить", use_container_width=True):
             if template_name:
                 settings = {"level_class": level_class, "misclosure_mode": misclosure_mode}
                 TemplateManager.save_template(template_name, settings)
@@ -695,6 +841,22 @@ with st.sidebar:
                 st.info(f"Шаблон '{selected_template}' загружен")
         else:
             st.caption("Нет сохранённых шаблонов")
+    
+    st.divider()
+    
+    st.subheader("📜 История проектов")
+    history = ProjectHistory.load_history()
+    if history:
+        for proj in history[:5]:
+            st.markdown(f"**{proj['name']}** · {proj['date']}")
+            st.caption(f"Станций: {proj['n_stations']} · Невязка: {proj['misclosure_mm']:.2f} мм")
+            if proj['is_valid']:
+                st.caption("✅ В допуске")
+            else:
+                st.caption("❌ Превышен допуск")
+            st.divider()
+    else:
+        st.caption("История пуста")
 
 if not uploaded:
     st.info("👈 Загрузите файл .DAT в панели слева для начала работы")
@@ -716,7 +878,7 @@ try:
     st.info(f"📊 Найдено: **{len(measurements)}** измерений, **{len(stations)}** станций, **{len(runs)}** ход(ов)")
     
     if points_with_heights:
-        with st.expander(" Найденные исходные отметки"):
+        with st.expander("📍 Найденные исходные отметки"):
             for pt, h in sorted(points_with_heights.items()):
                 st.text(f"{pt}: {h:.5f} м")
     
@@ -743,7 +905,7 @@ try:
             all_dfs.append(df)
     
     st.divider()
-    st.subheader(" Результаты уравнивания")
+    st.subheader("📊 Результаты уравнивания")
     
     for idx, result in enumerate(all_results):
         closed_badge = " 🔒 ЗАМКНУТЫЙ" if result.get("is_closed") else ""
@@ -762,7 +924,7 @@ try:
         with col2:
             st.markdown(f"""
             <div class="metric-card">
-                <div style="font-size: 0.9rem; opacity: 0.9;"> Станций</div>
+                <div style="font-size: 0.9rem; opacity: 0.9;">🔢 Станций</div>
                 <div style="font-size: 1.8rem; font-weight: 700;">{result['n_stations']}</div>
             </div>
             """, unsafe_allow_html=True)
@@ -770,7 +932,7 @@ try:
         with col3:
             st.markdown(f"""
             <div class="metric-card warning">
-                <div style="font-size: 0.9rem; opacity: 0.9;">📐 Невязка fh</div>
+                <div style="font-size: 0.9rem; opacity: 0.9;"> Невязка fh</div>
                 <div style="font-size: 1.8rem; font-weight: 700;">{result['misclosure_mm']:.2f} мм</div>
             </div>
             """, unsafe_allow_html=True)
@@ -785,7 +947,7 @@ try:
         
         st.markdown(f"""
         <div class="metric-card info">
-            <div style="font-size: 0.9rem; opacity: 0.9; margin-bottom: 0.5rem;">📐 Формула допуска</div>
+            <div style="font-size: 0.9rem; opacity: 0.9; margin-bottom: 0.5rem;"> Формула допуска</div>
             <div style="font-size: 1.3rem; font-weight: 700;">{result['formula_used']}</div>
         </div>
         """, unsafe_allow_html=True)
@@ -797,7 +959,7 @@ try:
         
         quality_issues = result.get("quality_issues", [])
         if quality_issues:
-            st.subheader("🔍 Контроль качества")
+            st.subheader(" Контроль качества")
             
             errors = [i for i in quality_issues if i.severity == 'error']
             warnings = [i for i in quality_issues if i.severity == 'warning']
@@ -808,7 +970,7 @@ try:
                     st.markdown(f"• **Станция {issue.station_id}** ({issue.point_from} → {issue.point_to}): {issue.message}")
             
             if warnings:
-                st.markdown(f'<div class="warning-box">️ Найдено предупреждений: **{len(warnings)}**</div>', unsafe_allow_html=True)
+                st.markdown(f'<div class="warning-box">⚠️ Найдено предупреждений: **{len(warnings)}**</div>', unsafe_allow_html=True)
                 for issue in warnings[:10]:
                     st.markdown(f"• {issue.message}")
                 if len(warnings) > 10:
@@ -872,6 +1034,10 @@ try:
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
             use_container_width=True
         )
+    
+    # Сохраняем в историю
+    if all_results:
+        ProjectHistory.save_project(job_name, all_results[0], uploaded.read())
 
 except Exception as e:
     st.error(f"❌ Ошибка обработки: {e}")
@@ -881,7 +1047,7 @@ except Exception as e:
 st.divider()
 st.markdown(f"""
 <div style="display: flex; justify-content: space-between; color: {theme['muted']}; font-size: 0.9rem; padding: 1rem 0;">
-    <span>📐 Geogeolevel v6.0</span>
+    <span>📐 Geogeolevel v6.1</span>
     <span>📅 {datetime.now().strftime('%d.%m.%Y')}</span>
     <span>⚡ Streamlit Cloud</span>
 </div>
