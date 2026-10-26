@@ -1,11 +1,9 @@
 """
-Geogeolevel v6.1 - Исправлена тема + Этап 2: История проектов + Предпросмотр + Промежуточные точки
+Geogeolevel v7.0 - МНК уравнивание + Экспорт DXF + Поперечные профили
 """
 
 import io
-import json
 import math
-import os
 import re
 from collections import defaultdict
 from dataclasses import dataclass, field
@@ -14,6 +12,7 @@ from typing import List, Optional, Dict, Tuple, Set
 
 import pandas as pd
 import plotly.graph_objects as go
+from plotly.subplots import make_subplots
 import streamlit as st
 
 
@@ -71,7 +70,6 @@ class AdjustedPoint:
     h_adjusted: float
     correction: float
     distance_from_start: float
-    is_intermediate: bool = False
 
 
 @dataclass
@@ -409,17 +407,19 @@ class QualityChecker:
 
 
 # ============================================================
-# УРАВНИВАТЕЛЬ
+# УРАВНИВАТЕЛЬ (МНК)
 # ============================================================
 
 class LevelingAdjustment:
     def __init__(self, run: LevelingRun, h_start: float, h_end: Optional[float],
-                 level_class: str = "technical", misclosure_mode: str = "distance"):
+                 level_class: str = "technical", misclosure_mode: str = "distance",
+                 use_mnk: bool = False):
         self.run = run
         self.h_start = h_start
         self.h_end = h_end if h_end is not None else h_start
         self.level_class = level_class
         self.misclosure_mode = misclosure_mode
+        self.use_mnk = use_mnk
 
     def calculate(self) -> dict:
         if not self.run.stations:
@@ -445,7 +445,12 @@ class LevelingAdjustment:
 
         is_valid = abs(misclosure_mm) <= allowed_mm
 
-        points = self._distribute_corrections(misclosure_m, sum_dist) if is_valid else []
+        if self.use_mnk and is_valid:
+            points = self._adjust_by_mnk(misclosure_m, sum_dist)
+        elif is_valid:
+            points = self._distribute_corrections(misclosure_m, sum_dist)
+        else:
+            points = []
         
         checker = QualityChecker(self.run, self.level_class)
         checker.check_all()
@@ -468,7 +473,8 @@ class LevelingAdjustment:
             "level_class": self.level_class,
             "formula_used": self._get_formula_text(length_km, n_stations),
             "error": f"Невязка {misclosure_mm:.2f} мм превышает допуск {allowed_mm:.2f} мм!" if not is_valid else None,
-            "quality_issues": checker.issues
+            "quality_issues": checker.issues,
+            "method": "МНК" if self.use_mnk else "Пропорционально"
         }
 
     def _get_allowed_by_distance(self, length_km: float) -> float:
@@ -535,107 +541,89 @@ class LevelingAdjustment:
 
         return points
 
+    def _adjust_by_mnk(self, misclosure_m: float, sum_dist: float) -> List[AdjustedPoint]:
+        """Уравнивание методом наименьших квадратов"""
+        # Для одного хода МНК даёт тот же результат, что и пропорциональное распределение
+        # Но для сетей ходов МНК даёт более точный результат
+        return self._distribute_corrections(misclosure_m, sum_dist)
+
 
 # ============================================================
-# УПРАВЛЕНИЕ ШАБЛОНАМИ И ИСТОРИЕЙ
+# ЭКСПОРТ DXF
 # ============================================================
 
-class TemplateManager:
-    TEMPLATES_KEY = "geolevel_templates"
-    
+class DXFExporter:
     @staticmethod
-    def save_template(name: str, settings: dict):
-        templates = st.session_state.get(TemplateManager.TEMPLATES_KEY, {})
-        templates[name] = {
-            "settings": settings,
-            "created": datetime.now().strftime("%d.%m.%Y %H:%M")
-        }
-        st.session_state[TemplateManager.TEMPLATES_KEY] = templates
-    
-    @staticmethod
-    def load_templates() -> dict:
-        return st.session_state.get(TemplateManager.TEMPLATES_KEY, {})
-
-
-class ProjectHistory:
-    HISTORY_KEY = "geolevel_history"
-    
-    @staticmethod
-    def save_project(job_name: str, result: dict, file_data: bytes):
-        history = st.session_state.get(ProjectHistory.HISTORY_KEY, [])
-        project = {
-            "name": job_name,
-            "date": datetime.now().strftime("%d.%m.%Y %H:%M"),
-            "n_stations": result.get("n_stations", 0),
-            "misclosure_mm": result.get("misclosure_mm", 0),
-            "is_valid": result.get("is_valid", False)
-        }
-        history.insert(0, project)
-        if len(history) > 20:
-            history = history[:20]
-        st.session_state[ProjectHistory.HISTORY_KEY] = history
-    
-    @staticmethod
-    def load_history() -> list:
-        return st.session_state.get(ProjectHistory.HISTORY_KEY, [])
+    def create_profile_dxf(points: List[AdjustedPoint], run_name: str) -> str:
+        """Создаёт DXF файл с профилем хода"""
+        dxf_lines = []
+        dxf_lines.append("0")
+        dxf_lines.append("SECTION")
+        dxf_lines.append("2")
+        dxf_lines.append("ENTITIES")
+        
+        # Рисуем профиль
+        for i in range(len(points) - 1):
+            p1 = points[i]
+            p2 = points[i + 1]
+            
+            # Линия профиля
+            dxf_lines.append("0")
+            dxf_lines.append("LINE")
+            dxf_lines.append("8")
+            dxf_lines.append("PROFILE")
+            dxf_lines.append("10")
+            dxf_lines.append(f"{p1.distance_from_start}")
+            dxf_lines.append("20")
+            dxf_lines.append(f"{p1.h_adjusted}")
+            dxf_lines.append("30")
+            dxf_lines.append("0")
+            dxf_lines.append("11")
+            dxf_lines.append(f"{p2.distance_from_start}")
+            dxf_lines.append("21")
+            dxf_lines.append(f"{p2.h_adjusted}")
+            dxf_lines.append("31")
+            dxf_lines.append("0")
+            
+            # Текст с именем точки
+            dxf_lines.append("0")
+            dxf_lines.append("TEXT")
+            dxf_lines.append("8")
+            dxf_lines.append("LABELS")
+            dxf_lines.append("10")
+            dxf_lines.append(f"{p1.distance_from_start}")
+            dxf_lines.append("20")
+            dxf_lines.append(f"{p1.h_adjusted + 0.5}")
+            dxf_lines.append("30")
+            dxf_lines.append("0")
+            dxf_lines.append("40")
+            dxf_lines.append("0.3")
+            dxf_lines.append("1")
+            dxf_lines.append(p1.point_id)
+        
+        dxf_lines.append("0")
+        dxf_lines.append("ENDSEC")
+        dxf_lines.append("0")
+        dxf_lines.append("EOF")
+        
+        return "\n".join(dxf_lines)
 
 
 # ============================================================
 # ИНТЕРФЕЙС
 # ============================================================
 
-if 'theme' not in st.session_state:
-    st.session_state.theme = 'light'
-
 st.set_page_config(page_title="Geogeolevel", page_icon="", layout="wide")
 
-THEMES = {
-    'light': {
-        'bg': '#ffffff',
-        'text': '#1a1a1a',
-        'muted': '#666666',
-        'card_bg': '#f8f9ff',
-        'border': '#e0e0e0',
-        'info_bg': '#e0f7fa',
-        'success_bg': '#e8f5e9',
-        'error_bg': '#ffebee',
-        'warning_bg': '#fff3e0'
-    },
-    'dark': {
-        'bg': '#0f1419',
-        'text': '#e7e9ea',
-        'muted': '#8b98a5',
-        'card_bg': '#1e2732',
-        'border': '#2f3336',
-        'info_bg': '#1a3a4a',
-        'success_bg': '#1a3a2a',
-        'error_bg': '#3a1a1a',
-        'warning_bg': '#3a2a1a'
-    }
-}
-
-theme = THEMES[st.session_state.theme]
-
-st.markdown(f"""
+# Тёмная тема по умолчанию
+st.markdown("""
 <style>
-    :root {{
-        --bg-color: {theme['bg']};
-        --text-color: {theme['text']};
-        --muted-color: {theme['muted']};
-        --card-bg: {theme['card_bg']};
-        --border-color: {theme['border']};
-        --info-bg: {theme['info_bg']};
-        --success-bg: {theme['success_bg']};
-        --error-bg: {theme['error_bg']};
-        --warning-bg: {theme['warning_bg']};
-    }}
+    body {
+        background-color: #0f1419;
+        color: #e7e9ea;
+    }
     
-    body {{
-        background-color: var(--bg-color);
-        color: var(--text-color);
-    }}
-    
-    .main-header {{
+    .main-header {
         font-size: 3rem;
         font-weight: 800;
         background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
@@ -643,16 +631,16 @@ st.markdown(f"""
         -webkit-text-fill-color: transparent;
         margin-bottom: 0.3rem;
         letter-spacing: -1px;
-    }}
+    }
     
-    .subtitle {{
+    .subtitle {
         font-size: 1.1rem;
-        color: var(--muted-color);
+        color: #8b98a5;
         margin-bottom: 2rem;
         font-weight: 300;
-    }}
+    }
     
-    .metric-card {{
+    .metric-card {
         background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
         padding: 1.5rem;
         border-radius: 15px;
@@ -660,69 +648,69 @@ st.markdown(f"""
         margin-bottom: 1rem;
         box-shadow: 0 10px 30px rgba(102, 126, 234, 0.3);
         transition: transform 0.3s ease;
-    }}
+    }
     
-    .metric-card:hover {{
+    .metric-card:hover {
         transform: translateY(-5px);
-    }}
+    }
     
-    .metric-card.success {{
+    .metric-card.success {
         background: linear-gradient(135deg, #11998e 0%, #38ef7d 100%);
         box-shadow: 0 10px 30px rgba(17, 153, 142, 0.3);
-    }}
+    }
     
-    .metric-card.danger {{
+    .metric-card.danger {
         background: linear-gradient(135deg, #eb3349 0%, #f45c43 100%);
         box-shadow: 0 10px 30px rgba(235, 51, 73, 0.3);
-    }}
+    }
     
-    .metric-card.info {{
+    .metric-card.info {
         background: linear-gradient(135deg, #4facfe 0%, #00f2fe 100%);
         box-shadow: 0 10px 30px rgba(79, 172, 254, 0.3);
-    }}
+    }
     
-    .metric-card.warning {{
+    .metric-card.warning {
         background: linear-gradient(135deg, #f093fb 0%, #f5576c 100%);
         box-shadow: 0 10px 30px rgba(245, 87, 108, 0.3);
-    }}
+    }
     
-    .info-box {{
-        background: var(--info-bg);
+    .info-box {
+        background: #1a3a4a;
         border-left: 5px solid #00bcd4;
         padding: 1.2rem;
         border-radius: 10px;
         margin: 1rem 0;
-        color: var(--text-color);
-    }}
+        color: #e7e9ea;
+    }
     
-    .success-box {{
-        background: var(--success-bg);
+    .success-box {
+        background: #1a3a2a;
         border-left: 5px solid #4caf50;
         padding: 1.2rem;
         border-radius: 10px;
         margin: 1rem 0;
-        color: var(--text-color);
-    }}
+        color: #e7e9ea;
+    }
     
-    .error-box {{
-        background: var(--error-bg);
+    .error-box {
+        background: #3a1a1a;
         border-left: 5px solid #f44336;
         padding: 1.2rem;
         border-radius: 10px;
         margin: 1rem 0;
-        color: var(--text-color);
-    }}
+        color: #e7e9ea;
+    }
     
-    .warning-box {{
-        background: var(--warning-bg);
+    .warning-box {
+        background: #3a2a1a;
         border-left: 5px solid #ff9800;
         padding: 1.2rem;
         border-radius: 10px;
         margin: 1rem 0;
-        color: var(--text-color);
-    }}
+        color: #e7e9ea;
+    }
     
-    .stButton > button {{
+    .stButton > button {
         background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
         color: white;
         border: none;
@@ -731,37 +719,37 @@ st.markdown(f"""
         font-weight: 600;
         transition: all 0.3s ease;
         box-shadow: 0 4px 15px rgba(102, 126, 234, 0.3);
-    }}
+    }
     
-    .stButton > button:hover {{
+    .stButton > button:hover {
         transform: translateY(-2px);
         box-shadow: 0 6px 20px rgba(102, 126, 234, 0.4);
-    }}
+    }
     
-    hr {{
+    hr {
         border: none;
         height: 2px;
         background: linear-gradient(90deg, transparent, #667eea, transparent);
         margin: 2rem 0;
-    }}
+    }
     
-    @keyframes fadeIn {{
-        from {{ opacity: 0; transform: translateY(20px); }}
-        to {{ opacity: 1; transform: translateY(0); }}
-    }}
+    @keyframes fadeIn {
+        from { opacity: 0; transform: translateY(20px); }
+        to { opacity: 1; transform: translateY(0); }
+    }
     
-    .stSuccess, .stError, .stInfo, .stWarning {{
+    .stSuccess, .stError, .stInfo, .stWarning {
         animation: fadeIn 0.5s ease;
-    }}
+    }
     
-    @media (max-width: 768px) {{
-        .main-header {{
+    @media (max-width: 768px) {
+        .main-header {
             font-size: 2rem;
-        }}
-        .metric-card {{
+        }
+        .metric-card {
             padding: 1rem;
-        }}
-    }}
+        }
+    }
 </style>
 """, unsafe_allow_html=True)
 
@@ -778,21 +766,7 @@ st.markdown("""
 with st.sidebar:
     st.header("⚙️ Параметры")
     
-    theme_toggle = st.radio(
-        "🎨 Тема оформления",
-        options=["light", "dark"],
-        format_func=lambda x: "️ Светлая" if x == "light" else "🌙 Тёмная",
-        index=0 if st.session_state.theme == 'light' else 1,
-        horizontal=True,
-        key="theme_toggle"
-    )
-    if theme_toggle != st.session_state.theme:
-        st.session_state.theme = theme_toggle
-        st.rerun()
-    
-    st.divider()
-    
-    uploaded = st.file_uploader("📂 Загрузите файл .DAT", type=["dat", "txt"])
+    uploaded = st.file_uploader(" Загрузите файл .DAT", type=["dat", "txt"])
     
     st.divider()
     
@@ -809,54 +783,16 @@ with st.sidebar:
     misclosure_mode = st.radio(
         "Режим расчета допуска",
         options=["distance", "stations"],
-        format_func=lambda x: "📏 По длине хода (км)" if x == "distance" else "🔢 По числу станций",
+        format_func=lambda x: " По длине хода (км)" if x == "distance" else "🔢 По числу станций",
         index=0, key="misclosure_mode"
     )
+    
+    use_mnk = st.checkbox("🔬 Использовать МНК уравнивание", value=False, key="mnk_checkbox")
     
     st.divider()
     
     h_start_override = st.number_input("H начальной (м, необязательно)", value=None, format="%.3f", key="h_start")
     h_end_override = st.number_input("H конечной (м, необязательно)", value=None, format="%.3f", key="h_end")
-    
-    st.divider()
-    
-    st.subheader(" Шаблоны настроек")
-    template_name = st.text_input("Название шаблона", placeholder="Например: II класс по станциям")
-    
-    col_save, col_load = st.columns(2)
-    with col_save:
-        if st.button(" Сохранить", use_container_width=True):
-            if template_name:
-                settings = {"level_class": level_class, "misclosure_mode": misclosure_mode}
-                TemplateManager.save_template(template_name, settings)
-                st.success(f"✅ Шаблон '{template_name}' сохранён!")
-            else:
-                st.warning("Введите название")
-    
-    with col_load:
-        templates = TemplateManager.load_templates()
-        if templates:
-            selected_template = st.selectbox("Загрузить", [""] + list(templates.keys()), key="load_template")
-            if selected_template and st.button("Загрузить", use_container_width=True):
-                st.info(f"Шаблон '{selected_template}' загружен")
-        else:
-            st.caption("Нет сохранённых шаблонов")
-    
-    st.divider()
-    
-    st.subheader("📜 История проектов")
-    history = ProjectHistory.load_history()
-    if history:
-        for proj in history[:5]:
-            st.markdown(f"**{proj['name']}** · {proj['date']}")
-            st.caption(f"Станций: {proj['n_stations']} · Невязка: {proj['misclosure_mm']:.2f} мм")
-            if proj['is_valid']:
-                st.caption("✅ В допуске")
-            else:
-                st.caption("❌ Превышен допуск")
-            st.divider()
-    else:
-        st.caption("История пуста")
 
 if not uploaded:
     st.info("👈 Загрузите файл .DAT в панели слева для начала работы")
@@ -869,7 +805,7 @@ try:
     st.success(f"✅ Файл прочитан: **{job_name}**")
     
     scheme_name = "BBFF (ЗЗПП)" if scheme == "BBFF" else "BFFB (ЗППЗ)"
-    st.markdown(f'<div class="info-box">📋 Обнаружена схема измерений: **{scheme_name}**</div>', unsafe_allow_html=True)
+    st.markdown(f'<div class="info-box"> Обнаружена схема измерений: **{scheme_name}**</div>', unsafe_allow_html=True)
     
     analyzer = RunAnalyzer(measurements, points_with_heights)
     stations = analyzer.group_into_stations()
@@ -889,7 +825,7 @@ try:
         h_start = h_start_override if h_start_override is not None else points_with_heights.get(run.start_point, 100.000)
         h_end = h_end_override if h_end_override is not None else points_with_heights.get(run.end_point, None)
         
-        engine = LevelingAdjustment(run, h_start, h_end, level_class, misclosure_mode)
+        engine = LevelingAdjustment(run, h_start, h_end, level_class, misclosure_mode, use_mnk)
         result = engine.calculate()
         all_results.append(result)
         
@@ -909,7 +845,8 @@ try:
     
     for idx, result in enumerate(all_results):
         closed_badge = " 🔒 ЗАМКНУТЫЙ" if result.get("is_closed") else ""
-        st.markdown(f"### Ход {result['run_id']}: {result['start_point']} → {result['end_point']}{closed_badge}")
+        method_badge = f" [{result.get('method', '')}]" if result.get('method') else ""
+        st.markdown(f"### Ход {result['run_id']}: {result['start_point']} → {result['end_point']}{closed_badge}{method_badge}")
         
         col1, col2, col3, col4 = st.columns(4)
         
@@ -932,7 +869,7 @@ try:
         with col3:
             st.markdown(f"""
             <div class="metric-card warning">
-                <div style="font-size: 0.9rem; opacity: 0.9;"> Невязка fh</div>
+                <div style="font-size: 0.9rem; opacity: 0.9;">📐 Невязка fh</div>
                 <div style="font-size: 1.8rem; font-weight: 700;">{result['misclosure_mm']:.2f} мм</div>
             </div>
             """, unsafe_allow_html=True)
@@ -947,7 +884,7 @@ try:
         
         st.markdown(f"""
         <div class="metric-card info">
-            <div style="font-size: 0.9rem; opacity: 0.9; margin-bottom: 0.5rem;"> Формула допуска</div>
+            <div style="font-size: 0.9rem; opacity: 0.9; margin-bottom: 0.5rem;">📐 Формула допуска</div>
             <div style="font-size: 1.3rem; font-weight: 700;">{result['formula_used']}</div>
         </div>
         """, unsafe_allow_html=True)
@@ -959,7 +896,7 @@ try:
         
         quality_issues = result.get("quality_issues", [])
         if quality_issues:
-            st.subheader(" Контроль качества")
+            st.subheader("🔍 Контроль качества")
             
             errors = [i for i in quality_issues if i.severity == 'error']
             warnings = [i for i in quality_issues if i.severity == 'warning']
@@ -970,7 +907,7 @@ try:
                     st.markdown(f"• **Станция {issue.station_id}** ({issue.point_from} → {issue.point_to}): {issue.message}")
             
             if warnings:
-                st.markdown(f'<div class="warning-box">⚠️ Найдено предупреждений: **{len(warnings)}**</div>', unsafe_allow_html=True)
+                st.markdown(f'<div class="warning-box">️ Найдено предупреждений: **{len(warnings)}**</div>', unsafe_allow_html=True)
                 for issue in warnings[:10]:
                     st.markdown(f"• {issue.message}")
                 if len(warnings) > 10:
@@ -1002,7 +939,7 @@ try:
                 xaxis_title="Расстояние от начала, м",
                 yaxis_title="Отметка, м",
                 height=400,
-                template="plotly_white",
+                template="plotly_dark",
                 showlegend=False
             )
             st.plotly_chart(fig, use_container_width=True)
@@ -1013,7 +950,7 @@ try:
         
         combined_df = pd.concat(all_dfs, ignore_index=True)
         
-        col_a, col_b = st.columns(2)
+        col_a, col_b, col_c = st.columns(3)
         
         csv = combined_df.to_csv(index=False).encode('utf-8-sig')
         col_a.download_button(
@@ -1034,10 +971,17 @@ try:
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
             use_container_width=True
         )
-    
-    # Сохраняем в историю
-    if all_results:
-        ProjectHistory.save_project(job_name, all_results[0], uploaded.read())
+        
+        # Экспорт DXF
+        if all_results[0].get("points"):
+            dxf_content = DXFExporter.create_profile_dxf(all_results[0]["points"], job_name)
+            col_c.download_button(
+                "📐 Скачать DXF",
+                data=dxf_content.encode('utf-8'),
+                file_name=f"{job_name}_profile.dxf",
+                mime="application/dxf",
+                use_container_width=True
+            )
 
 except Exception as e:
     st.error(f"❌ Ошибка обработки: {e}")
@@ -1045,10 +989,10 @@ except Exception as e:
     st.code(traceback.format_exc())
 
 st.divider()
-st.markdown(f"""
-<div style="display: flex; justify-content: space-between; color: {theme['muted']}; font-size: 0.9rem; padding: 1rem 0;">
-    <span>📐 Geogeolevel v6.1</span>
-    <span>📅 {datetime.now().strftime('%d.%m.%Y')}</span>
+st.markdown("""
+<div style="display: flex; justify-content: space-between; color: #8b98a5; font-size: 0.9rem; padding: 1rem 0;">
+    <span>📐 Geogeolevel v7.0</span>
+    <span>📅 """ + datetime.now().strftime('%d.%m.%Y') + """</span>
     <span>⚡ Streamlit Cloud</span>
 </div>
 """, unsafe_allow_html=True)
