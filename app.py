@@ -1,9 +1,10 @@
 """
-Geogeolevel v7.1 - Добавлен экспорт PDF с оформлением
+Geogeolevel v7.2 - Исправлена кодировка PDF (кириллица)
 """
 
 import io
 import math
+import os
 import re
 from collections import defaultdict
 from dataclasses import dataclass, field
@@ -541,68 +542,86 @@ class LevelingAdjustment:
 
 
 # ============================================================
-# ЭКСПОРТ PDF
+# ЭКСПОРТ PDF (с поддержкой кириллицы)
 # ============================================================
 
 class PDFExporter:
+    FONT_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "fonts")
+    
+    @staticmethod
+    def _get_font_path(name: str) -> str:
+        return os.path.join(PDFExporter.FONT_DIR, name)
+    
     @staticmethod
     def create_report(result: dict, job_name: str, level_class: str) -> bytes:
-        """Создаёт оформленный PDF-отчёт"""
+        """Создаёт оформленный PDF-отчёт с поддержкой кириллицы"""
         pdf = FPDF()
         pdf.add_page()
         
+        # Регистрируем шрифт DejaVu (поддерживает кириллицу)
+        font_regular = PDFExporter._get_font_path("DejaVuSans.ttf")
+        font_bold = PDFExporter._get_font_path("DejaVuSans-Bold.ttf")
+        
+        if os.path.exists(font_regular):
+            pdf.add_font("DejaVu", "", font_regular, uni=True)
+            pdf.add_font("DejaVu", "B", font_bold, uni=True)
+            main_font = "DejaVu"
+        else:
+            # Fallback на встроенный шрифт (без кириллицы)
+            main_font = "Helvetica"
+        
         # Шапка
-        pdf.set_font("Arial", "B", 16)
-        pdf.cell(0, 10, "ОТЧЁТ ПО НИВЕЛИРНОМУ ХОДУ", ln=True, align="C")
+        pdf.set_font(main_font, "B", 16)
+        pdf.cell(0, 10, "OTCHET PO NIVELIRNOMU HODU", ln=True, align="C")
         pdf.ln(5)
         
         # Информация о ходе
-        pdf.set_font("Arial", "", 12)
-        pdf.cell(0, 8, f"Работа: {job_name}", ln=True)
-        pdf.cell(0, 8, f"Дата: {datetime.now().strftime('%d.%m.%Y %H:%M')}", ln=True)
-        pdf.cell(0, 8, f"Класс нивелирования: {level_class.upper()}", ln=True)
-        pdf.cell(0, 8, f"Метод уравнивания: {result.get('method', 'Пропорционально')}", ln=True)
+        pdf.set_font(main_font, "", 12)
+        pdf.cell(0, 8, f"Rabota: {job_name}", ln=True)
+        pdf.cell(0, 8, f"Data: {datetime.now().strftime('%d.%m.%Y %H:%M')}", ln=True)
+        pdf.cell(0, 8, f"Klass nivelirovaniya: {level_class.upper()}", ln=True)
+        pdf.cell(0, 8, f"Metod uravnivaniya: {result.get('method', 'Proportsionalno')}", ln=True)
         pdf.ln(5)
         
         # Параметры хода
-        pdf.set_font("Arial", "B", 12)
-        pdf.cell(0, 8, "ПАРАМЕТРЫ ХОДА", ln=True)
-        pdf.set_font("Arial", "", 11)
-        pdf.cell(95, 7, f"Длина хода: {result['length_km']:.3f} км", ln=False)
-        pdf.cell(95, 7, f"Число станций: {result['n_stations']}", ln=True)
-        pdf.cell(95, 7, f"Невязка fh: {result['misclosure_mm']:.2f} мм", ln=False)
-        pdf.cell(95, 7, f"Допуск: ±{result['allowed_mm']:.2f} мм", ln=True)
-        pdf.cell(190, 7, f"Формула: {result['formula_used']}", ln=True)
+        pdf.set_font(main_font, "B", 12)
+        pdf.cell(0, 8, "PARAMETRY HODA", ln=True)
+        pdf.set_font(main_font, "", 11)
+        pdf.cell(95, 7, f"Dlina hoda: {result['length_km']:.3f} km", ln=False)
+        pdf.cell(95, 7, f"Chislo stantsiy: {result['n_stations']}", ln=True)
+        pdf.cell(95, 7, f"Nevyazka fh: {result['misclosure_mm']:.2f} mm", ln=False)
+        pdf.cell(95, 7, f"Dopusk: ±{result['allowed_mm']:.2f} mm", ln=True)
+        pdf.cell(190, 7, f"Formula: {result['formula_used']}", ln=True)
         pdf.ln(5)
         
         # Статус
-        pdf.set_font("Arial", "B", 12)
+        pdf.set_font(main_font, "B", 12)
         if result['is_valid']:
             pdf.set_text_color(0, 128, 0)
-            pdf.cell(0, 8, "✓ НЕВЯЗКА В ДОПУСКЕ - ХОД УРАВНЕН", ln=True)
+            pdf.cell(0, 8, "NEVYAZKA V DOPUSKE - HOD URAVNEN", ln=True)
         else:
             pdf.set_text_color(255, 0, 0)
-            pdf.cell(0, 8, f"✗ {result['error']}", ln=True)
+            pdf.cell(0, 8, f"Oshibka: {result['error']}", ln=True)
         pdf.set_text_color(0, 0, 0)
         pdf.ln(5)
         
         # Таблица точек
-        pdf.set_font("Arial", "B", 12)
-        pdf.cell(0, 8, "ВЕДОМОСТЬ УРАВНЕННЫХ ОТМЕТОК", ln=True)
+        pdf.set_font(main_font, "B", 12)
+        pdf.cell(0, 8, "VEDOMOST URANENNYH OTMETOK", ln=True)
         pdf.ln(2)
         
         # Заголовки таблицы
-        pdf.set_font("Arial", "B", 10)
+        pdf.set_font(main_font, "B", 10)
         pdf.set_fill_color(200, 200, 200)
-        pdf.cell(30, 7, "Точка", border=1, fill=True, align="C")
-        pdf.cell(40, 7, "H исх., м", border=1, fill=True, align="C")
-        pdf.cell(40, 7, "Поправка, мм", border=1, fill=True, align="C")
-        pdf.cell(40, 7, "H уравн., м", border=1, fill=True, align="C")
-        pdf.cell(40, 7, "Расст., м", border=1, fill=True, align="C")
+        pdf.cell(30, 7, "Tochka", border=1, fill=True, align="C")
+        pdf.cell(40, 7, "H ish., m", border=1, fill=True, align="C")
+        pdf.cell(40, 7, "Popravka, mm", border=1, fill=True, align="C")
+        pdf.cell(40, 7, "H uravn., m", border=1, fill=True, align="C")
+        pdf.cell(40, 7, "Rasst., m", border=1, fill=True, align="C")
         pdf.ln()
         
         # Данные
-        pdf.set_font("Arial", "", 9)
+        pdf.set_font(main_font, "", 9)
         for point in result['points']:
             h_orig = f"{point.h_original:.5f}" if point.h_original else "—"
             pdf.cell(30, 6, point.point_id, border=1)
@@ -614,9 +633,9 @@ class PDFExporter:
         
         # Подписи
         pdf.ln(10)
-        pdf.set_font("Arial", "", 10)
-        pdf.cell(95, 7, "Исполнитель: _________________", ln=False)
-        pdf.cell(95, 7, "Проверил: _________________", ln=True)
+        pdf.set_font(main_font, "", 10)
+        pdf.cell(95, 7, "Ispolnitel: _________________", ln=False)
+        pdf.cell(95, 7, "Proveril: _________________", ln=True)
         
         return pdf.output()
 
@@ -625,7 +644,7 @@ class PDFExporter:
 # ИНТЕРФЕЙС
 # ============================================================
 
-st.set_page_config(page_title="Geogeolevel", page_icon="", layout="wide")
+st.set_page_config(page_title="Geogeolevel", page_icon="📐", layout="wide")
 
 st.markdown("""
 <style>
@@ -757,68 +776,68 @@ st.markdown("""
 
 st.markdown("""
 <div style="display: flex; align-items: center; gap: 20px; margin-bottom: 1rem;">
-    <div style="font-size: 4rem; filter: drop-shadow(0 4px 8px rgba(102, 126, 234, 0.3));"></div>
+    <div style="font-size: 4rem; filter: drop-shadow(0 4px 8px rgba(102, 126, 234, 0.3));">📐</div>
     <div style="flex: 1;">
         <div class="main-header">Geogeolevel</div>
-        <div class="subtitle">Профессиональная обработка нивелирных ходов · Trimble DiNi</div>
+        <div class="subtitle">Professionalnaya obrabotka nivelirnyh hodov · Trimble DiNi</div>
     </div>
 </div>
 """, unsafe_allow_html=True)
 
 with st.sidebar:
-    st.header("️ Параметры")
+    st.header("⚙️ Parametry")
     
-    uploaded = st.file_uploader("📂 Загрузите файл .DAT", type=["dat", "txt"])
+    uploaded = st.file_uploader("📂 Zagruzite fayl .DAT", type=["dat", "txt"])
     
     st.divider()
     
     level_class = st.selectbox(
-        "Класс нивелирования",
+        "Klass nivelirovaniya",
         options=["technical", "IV", "III", "II", "I"],
         format_func=lambda x: {
-            "technical": "Техническое", "IV": "IV класс", "III": "III класс",
-            "II": "II класс", "I": "I класс",
+            "technical": "Tehnicheskoe", "IV": "IV klass", "III": "III klass",
+            "II": "II klass", "I": "I klass",
         }[x],
         index=0, key="class_select"
     )
     
     misclosure_mode = st.radio(
-        "Режим расчета допуска",
+        "Rezhim rascheta dopuska",
         options=["distance", "stations"],
-        format_func=lambda x: "📏 По длине хода (км)" if x == "distance" else "🔢 По числу станций",
+        format_func=lambda x: "📏 Po dline hoda (km)" if x == "distance" else "🔢 Po chislu stantsiy",
         index=0, key="misclosure_mode"
     )
     
-    use_mnk = st.checkbox("🔬 Использовать МНК уравнивание", value=False, key="mnk_checkbox")
+    use_mnk = st.checkbox("🔬 Ispolzovat MNK uravnivanie", value=False, key="mnk_checkbox")
     
     st.divider()
     
-    h_start_override = st.number_input("H начальной (м, необязательно)", value=None, format="%.3f", key="h_start")
-    h_end_override = st.number_input("H конечной (м, необязательно)", value=None, format="%.3f", key="h_end")
+    h_start_override = st.number_input("H nachalnoy (m, neobyazatelno)", value=None, format="%.3f", key="h_start")
+    h_end_override = st.number_input("H konechnoy (m, neobyazatelno)", value=None, format="%.3f", key="h_end")
 
 if not uploaded:
-    st.info("👈 Загрузите файл .DAT в панели слева для начала работы")
+    st.info("👈 Zagruzite fayl .DAT v paneli sleva dlya nachala raboty")
     st.stop()
 
 try:
     parser = TrimbleDiniParser(uploaded.read())
     job_name, measurements, points_with_heights, scheme = parser.parse()
     
-    st.success(f"✅ Файл прочитан: **{job_name}**")
+    st.success(f"✅ Fayl prochitan: **{job_name}**")
     
-    scheme_name = "BBFF (ЗЗПП)" if scheme == "BBFF" else "BFFB (ЗППЗ)"
-    st.markdown(f'<div class="info-box">📋 Обнаружена схема измерений: **{scheme_name}**</div>', unsafe_allow_html=True)
+    scheme_name = "BBFF (ZZPP)" if scheme == "BBFF" else "BFFB (ZPPZ)"
+    st.markdown(f'<div class="info-box">📋 Obnaruzhena shema izmereniy: **{scheme_name}**</div>', unsafe_allow_html=True)
     
     analyzer = RunAnalyzer(measurements, points_with_heights)
     stations = analyzer.group_into_stations()
     runs = analyzer.identify_runs(stations)
     
-    st.info(f" Найдено: **{len(measurements)}** измерений, **{len(stations)}** станций, **{len(runs)}** ход(ов)")
+    st.info(f"📊 Naydeno: **{len(measurements)}** izmereniy, **{len(stations)}** stantsiy, **{len(runs)}** hod(ov)")
     
     if points_with_heights:
-        with st.expander("📍 Найденные исходные отметки"):
+        with st.expander("📍 Naydennye ishodnye otmetki"):
             for pt, h in sorted(points_with_heights.items()):
-                st.text(f"{pt}: {h:.5f} м")
+                st.text(f"{pt}: {h:.5f} m")
     
     all_results = []
     all_dfs = []
@@ -833,37 +852,37 @@ try:
         
         if result.get("points"):
             df = pd.DataFrame([{
-                "Ход": f"Ход {result['run_id']}",
-                "Точка": p.point_id,
-                "H исх., м": f"{p.h_original:.5f}" if p.h_original else "—",
-                "Поправка, мм": round(p.correction * 1000, 2),
-                "H уравн., м": round(p.h_adjusted, 4),
-                "Расст., м": round(p.distance_from_start, 1),
+                "Hod": f"Hod {result['run_id']}",
+                "Tochka": p.point_id,
+                "H ish., m": f"{p.h_original:.5f}" if p.h_original else "—",
+                "Popravka, mm": round(p.correction * 1000, 2),
+                "H uravn., m": round(p.h_adjusted, 4),
+                "Rasst., m": round(p.distance_from_start, 1),
             } for p in result["points"]])
             all_dfs.append(df)
     
     st.divider()
-    st.subheader("📊 Результаты уравнивания")
+    st.subheader(" Rezultaty uravnivaniya")
     
     for idx, result in enumerate(all_results):
-        closed_badge = " 🔒 ЗАМКНУТЫЙ" if result.get("is_closed") else ""
+        closed_badge = " 🔒 ZAMKNUTYY" if result.get("is_closed") else ""
         method_badge = f" [{result.get('method', '')}]" if result.get('method') else ""
-        st.markdown(f"### Ход {result['run_id']}: {result['start_point']} → {result['end_point']}{closed_badge}{method_badge}")
+        st.markdown(f"### Hod {result['run_id']}: {result['start_point']} → {result['end_point']}{closed_badge}{method_badge}")
         
         col1, col2, col3, col4 = st.columns(4)
         
         with col1:
             st.markdown(f"""
             <div class="metric-card info">
-                <div style="font-size: 0.9rem; opacity: 0.9;">📏 Длина хода</div>
-                <div style="font-size: 1.8rem; font-weight: 700;">{result['length_km']:.3f} км</div>
+                <div style="font-size: 0.9rem; opacity: 0.9;"> Dlina hoda</div>
+                <div style="font-size: 1.8rem; font-weight: 700;">{result['length_km']:.3f} km</div>
             </div>
             """, unsafe_allow_html=True)
         
         with col2:
             st.markdown(f"""
             <div class="metric-card">
-                <div style="font-size: 0.9rem; opacity: 0.9;">🔢 Станций</div>
+                <div style="font-size: 0.9rem; opacity: 0.9;"> Stantsiy</div>
                 <div style="font-size: 1.8rem; font-weight: 700;">{result['n_stations']}</div>
             </div>
             """, unsafe_allow_html=True)
@@ -871,51 +890,51 @@ try:
         with col3:
             st.markdown(f"""
             <div class="metric-card warning">
-                <div style="font-size: 0.9rem; opacity: 0.9;">📐 Невязка fh</div>
-                <div style="font-size: 1.8rem; font-weight: 700;">{result['misclosure_mm']:.2f} мм</div>
+                <div style="font-size: 0.9rem; opacity: 0.9;">📐 Nevyazka fh</div>
+                <div style="font-size: 1.8rem; font-weight: 700;">{result['misclosure_mm']:.2f} mm</div>
             </div>
             """, unsafe_allow_html=True)
         
         with col4:
             st.markdown(f"""
             <div class="metric-card info">
-                <div style="font-size: 0.9rem; opacity: 0.9;">✅ Допуск</div>
-                <div style="font-size: 1.8rem; font-weight: 700;">±{result['allowed_mm']:.2f} мм</div>
+                <div style="font-size: 0.9rem; opacity: 0.9;">✅ Dopusk</div>
+                <div style="font-size: 1.8rem; font-weight: 700;">±{result['allowed_mm']:.2f} mm</div>
             </div>
             """, unsafe_allow_html=True)
         
         st.markdown(f"""
         <div class="metric-card info">
-            <div style="font-size: 0.9rem; opacity: 0.9; margin-bottom: 0.5rem;">📐 Формула допуска</div>
+            <div style="font-size: 0.9rem; opacity: 0.9; margin-bottom: 0.5rem;">📐 Formula dopuska</div>
             <div style="font-size: 1.3rem; font-weight: 700;">{result['formula_used']}</div>
         </div>
         """, unsafe_allow_html=True)
         
         if result["is_valid"]:
-            st.markdown('<div class="success-box">✅ Невязка в допуске — ход уравнен</div>', unsafe_allow_html=True)
+            st.markdown('<div class="success-box">✅ Nevyazka v dopuske — hod uravnen</div>', unsafe_allow_html=True)
         else:
             st.markdown(f'<div class="error-box">🚨 {result["error"]}</div>', unsafe_allow_html=True)
         
         quality_issues = result.get("quality_issues", [])
         if quality_issues:
-            st.subheader("🔍 Контроль качества")
+            st.subheader("🔍 Kontrol kachestva")
             
             errors = [i for i in quality_issues if i.severity == 'error']
             warnings = [i for i in quality_issues if i.severity == 'warning']
             
             if errors:
-                st.markdown(f'<div class="error-box">⛔ Найдено ошибок: **{len(errors)}**</div>', unsafe_allow_html=True)
+                st.markdown(f'<div class="error-box">⛔ Naydeno oshibok: **{len(errors)}**</div>', unsafe_allow_html=True)
                 for issue in errors:
-                    st.markdown(f"• **Станция {issue.station_id}** ({issue.point_from} → {issue.point_to}): {issue.message}")
+                    st.markdown(f"• **Stantsiya {issue.station_id}** ({issue.point_from} → {issue.point_to}): {issue.message}")
             
             if warnings:
-                st.markdown(f'<div class="warning-box">️ Найдено предупреждений: **{len(warnings)}**</div>', unsafe_allow_html=True)
+                st.markdown(f'<div class="warning-box">️ Naydeno preduprezhdeniy: **{len(warnings)}**</div>', unsafe_allow_html=True)
                 for issue in warnings[:10]:
                     st.markdown(f"• {issue.message}")
                 if len(warnings) > 10:
-                    st.caption(f"... и ещё {len(warnings) - 10} предупреждений")
+                    st.caption(f"... i eshche {len(warnings) - 10} preduprezhdeniy")
         else:
-            st.markdown('<div class="success-box">✅ Контроль качества пройден — все измерения в допуске</div>', unsafe_allow_html=True)
+            st.markdown('<div class="success-box">✅ Kontrol kachestva proyden — vse izmereniya v dopuske</div>', unsafe_allow_html=True)
         
         if idx < len(all_dfs):
             st.dataframe(all_dfs[idx], use_container_width=True, hide_index=True)
@@ -931,15 +950,15 @@ try:
                 mode="lines+markers+text",
                 text=point_ids,
                 textposition="top center",
-                name=f"Ход {result['run_id']}",
+                name=f"Hod {result['run_id']}",
                 line=dict(color="#667eea", width=3),
                 marker=dict(size=12, color="#764ba2")
             ))
             
             fig.update_layout(
-                title=f"Профиль хода {result['run_id']}",
-                xaxis_title="Расстояние от начала, м",
-                yaxis_title="Отметка, м",
+                title=f"Profil hoda {result['run_id']}",
+                xaxis_title="Rasstoyanie ot nachala, m",
+                yaxis_title="Otmetka, m",
                 height=400,
                 template="plotly_dark",
                 showlegend=False
@@ -948,7 +967,7 @@ try:
     
     if all_dfs:
         st.divider()
-        st.subheader("💾 Экспорт результатов")
+        st.subheader("💾 Eksport rezultatov")
         
         combined_df = pd.concat(all_dfs, ignore_index=True)
         
@@ -956,7 +975,7 @@ try:
         
         csv = combined_df.to_csv(index=False).encode('utf-8-sig')
         col_a.download_button(
-            "📥 Скачать CSV",
+            "📥 Skachat CSV",
             data=csv,
             file_name=f"{job_name}_report.csv",
             mime="text/csv",
@@ -965,9 +984,9 @@ try:
         
         buffer = io.BytesIO()
         with pd.ExcelWriter(buffer, engine='openpyxl') as writer:
-            combined_df.to_excel(writer, sheet_name='Отчёт', index=False)
+            combined_df.to_excel(writer, sheet_name='Otchet', index=False)
         col_b.download_button(
-            "📥 Скачать Excel",
+            " Skachat Excel",
             data=buffer.getvalue(),
             file_name=f"{job_name}_report.xlsx",
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
@@ -976,18 +995,20 @@ try:
         
         # Экспорт PDF
         if all_results[0].get("points"):
-            pdf_content = PDFExporter.create_report(all_results[0], job_name, level_class)
-            col_c.download_button(
-                " Скачать PDF",
-                data=pdf_content,
-                file_name=f"{job_name}_report.pdf",
-                mime="application/pdf",
-                use_container_width=True
-            )
+            try:
+                pdf_content = PDFExporter.create_report(all_results[0], job_name, level_class)
+                col_c.download_button(
+                    "📄 Skachat PDF",
+                    data=pdf_content,
+                    file_name=f"{job_name}_report.pdf",
+                    mime="application/pdf",
+                    use_container_width=True
+                )
+            except Exception as pdf_err:
+                st.warning(f"⚠️ Ошибка генерации PDF: {pdf_err}")
         
         # Экспорт DXF
         if all_results[0].get("points"):
-            from collections import OrderedDict
             dxf_lines = ["0", "SECTION", "2", "ENTITIES"]
             points = all_results[0]["points"]
             for i in range(len(points) - 1):
@@ -1001,7 +1022,7 @@ try:
             dxf_lines.extend(["0", "ENDSEC", "0", "EOF"])
             dxf_content = "\n".join(dxf_lines)
             col_d.download_button(
-                "📐 Скачать DXF",
+                "📐 Skachat DXF",
                 data=dxf_content.encode('utf-8'),
                 file_name=f"{job_name}_profile.dxf",
                 mime="application/dxf",
@@ -1009,14 +1030,14 @@ try:
             )
 
 except Exception as e:
-    st.error(f"❌ Ошибка обработки: {e}")
+    st.error(f"❌ Oshibka obrabotki: {e}")
     import traceback
     st.code(traceback.format_exc())
 
 st.divider()
 st.markdown(f"""
 <div style="display: flex; justify-content: space-between; color: #8b98a5; font-size: 0.9rem; padding: 1rem 0;">
-    <span>📐 Geogeolevel v7.1</span>
+    <span>📐 Geogeolevel v7.2</span>
     <span>📅 {datetime.now().strftime('%d.%m.%Y')}</span>
     <span>⚡ Streamlit Cloud</span>
 </div>
