@@ -1,6 +1,6 @@
 """
-Geogeolevel v4.0 - Обработка нивелирных ходов
-Поддержка Trimble DiNi BFFB, множественных ходов, промежуточных точек
+Geogeolevel v4.1 - Обработка нивелирных ходов
+Исправлена ошибка fore_point
 """
 
 import io
@@ -12,7 +12,6 @@ from typing import List, Optional, Dict, Tuple, Set
 
 import pandas as pd
 import plotly.graph_objects as go
-from plotly.subplots import make_subplots
 import streamlit as st
 
 
@@ -123,7 +122,7 @@ class TrimbleDiniBFFBParser:
                     
                     measurements.append(RawMeasurement(
                         back_point=current_back_point,
-                        fore_point=fore_pt,
+                        fore_point=fore_point,
                         back_reading=current_back_reading,
                         fore_reading=fore_reading,
                         back_dist=current_back_dist,
@@ -185,11 +184,6 @@ class RunAnalyzer:
     def identify_runs(self, stations: List[Station]) -> List[LevelingRun]:
         if not stations:
             return []
-        
-        graph = defaultdict(set)
-        for s in stations:
-            graph[s.back_point].add(s.fore_point)
-            graph[s.fore_point].add(s.back_point)
         
         visited = set()
         runs = []
@@ -430,7 +424,7 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-st.markdown('<div class="main-header">📐 Geogeolevel</div>', unsafe_allow_html=True)
+st.markdown('<div class="main-header"> Geogeolevel</div>', unsafe_allow_html=True)
 st.markdown('<div class="subtitle">Обработка нивелирных ходов · Trimble DiNi BFFB · Уравнивание · Отчёты</div>', unsafe_allow_html=True)
 
 with st.sidebar:
@@ -593,4 +587,4 @@ except Exception as e:
     st.code(traceback.format_exc())
 
 st.divider()
-st.caption("Geogeolevel v4.0 · Обработка нивелирных ходов")
+st.caption("Geogeolevel v4.1 · Обработка нивелирных ходов")
