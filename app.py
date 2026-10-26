@@ -3,11 +3,10 @@ Geogeolevel v6.0 - Контроль качества + Тёмная тема + �
 """
 
 import io
-import json
 import math
 import re
 from collections import defaultdict
-from dataclasses import dataclass, field, asdict
+from dataclasses import dataclass, field
 from datetime import datetime
 from typing import List, Optional, Dict, Tuple, Set
 
@@ -45,12 +44,12 @@ class Station:
     fore_point: str
     dh_mean: float
     distance: float
-    dh_1: float  # Первое измерение
-    dh_2: float  # Контрольное измерение
+    dh_1: float
+    dh_2: float
     dist_1: float
     dist_2: float
-    dh_diff: float  # Разность превышений
-    dist_diff: float  # Разность плеч
+    dh_diff: float
+    dist_diff: float
     measurements: List[RawMeasurement] = field(default_factory=list)
 
 
@@ -60,7 +59,7 @@ class LevelingRun:
     stations: List[Station]
     start_point: str
     end_point: str
-    is_closed: bool  # Замкнутый ход
+    is_closed: bool
 
 
 @dataclass
@@ -74,14 +73,13 @@ class AdjustedPoint:
 
 @dataclass
 class QualityIssue:
-    """Проблема качества"""
     station_id: int
     point_from: str
     point_to: str
-    issue_type: str  # 'dh_diff', 'dist_diff', 'anomaly'
+    issue_type: str
     value: float
     limit: float
-    severity: str  # 'warning', 'error'
+    severity: str
     message: str
 
 
@@ -255,7 +253,7 @@ class RunAnalyzer:
             stations.append(Station(
                 station_id=idx,
                 back_point=back_pt,
-                fore_point=fore_point,
+                fore_point=fore_pt,
                 dh_mean=dh_mean,
                 distance=dist_mean,
                 dh_1=dh_1,
@@ -340,8 +338,6 @@ class RunAnalyzer:
 # ============================================================
 
 class QualityChecker:
-    """Проверяет качество измерений"""
-    
     def __init__(self, run: LevelingRun, level_class: str):
         self.run = run
         self.level_class = level_class
@@ -354,8 +350,6 @@ class QualityChecker:
         return self.issues
     
     def _check_dh_differences(self):
-        """Контроль разности превышений (прямое/контрольное)"""
-        # Для II класса допуск обычно 2 мм, для III - 3 мм, для IV - 5 мм
         limits = {"I": 1.0, "II": 2.0, "III": 3.0, "IV": 5.0, "technical": 10.0}
         limit = limits.get(self.level_class, 5.0)
         
@@ -373,8 +367,6 @@ class QualityChecker:
                 ))
     
     def _check_dist_differences(self):
-        """Контроль разности плеч"""
-        # Для II класса допуск 5 м, для III - 10 м, для IV - 20 м
         limits = {"I": 2.0, "II": 5.0, "III": 10.0, "IV": 20.0, "technical": 30.0}
         limit = limits.get(self.level_class, 10.0)
         
@@ -392,17 +384,14 @@ class QualityChecker:
                 ))
     
     def check_anomalies(self, adjusted_points: List[AdjustedPoint], sum_dist: float):
-        """Выявление грубых ошибок по аномальным поправкам"""
         if not adjusted_points or sum_dist == 0:
             return
         
-        # Средняя поправка на 1 км
-        avg_correction_per_km = sum(abs(p.correction) for p in adjusted_points) / (sum_dist / 1000.0) if sum_dist > 0 else 0
+        avg_correction_per_km = sum(abs(p.correction) for p in adjusted_points) / (sum_dist / 1000.0)
         
         for point in adjusted_points:
             if point.correction == 0:
                 continue
-            # Если поправка больше 5 средних — аномалия
             if abs(point.correction) > 5 * avg_correction_per_km * (point.distance_from_start / sum_dist) and abs(point.correction) > 0.001:
                 self.issues.append(QualityIssue(
                     station_id=0,
@@ -455,8 +444,8 @@ class LevelingAdjustment:
 
         points = self._distribute_corrections(misclosure_m, sum_dist) if is_valid else []
         
-        # Проверка аномалий
         checker = QualityChecker(self.run, self.level_class)
+        checker.check_all()
         if points:
             checker.check_anomalies(points, sum_dist)
 
@@ -549,8 +538,6 @@ class LevelingAdjustment:
 # ============================================================
 
 class TemplateManager:
-    """Сохранение и загрузка шаблонов настроек"""
-    
     TEMPLATES_KEY = "geolevel_templates"
     
     @staticmethod
@@ -565,186 +552,76 @@ class TemplateManager:
     @staticmethod
     def load_templates() -> dict:
         return st.session_state.get(TemplateManager.TEMPLATES_KEY, {})
-    
-    @staticmethod
-    def delete_template(name: str):
-        templates = st.session_state.get(TemplateManager.TEMPLATES_KEY, {})
-        if name in templates:
-            del templates[name]
-            st.session_state[TemplateManager.TEMPLATES_KEY] = templates
 
 
 # ============================================================
 # ИНТЕРФЕЙС
 # ============================================================
 
-# Инициализация сессии
 if 'theme' not in st.session_state:
     st.session_state.theme = 'light'
 
-st.set_page_config(page_title="Geogeolevel", page_icon="", layout="wide")
+st.set_page_config(page_title="Geogeolevel", page_icon="📐", layout="wide")
 
-# ===== СТИЛИ =====
 THEMES = {
-    'light': {
-        'bg': '#ffffff',
-        'text': '#1a1a1a',
-        'muted': '#666666',
-        'card_bg': '#f8f9ff',
-        'border': '#e0e0e0',
-    },
-    'dark': {
-        'bg': '#0f1419',
-        'text': '#e7e9ea',
-        'muted': '#8b98a5',
-        'card_bg': '#1e2732',
-        'border': '#2f3336',
-    }
+    'light': {'bg': '#ffffff', 'text': '#1a1a1a', 'muted': '#666666'},
+    'dark': {'bg': '#0f1419', 'text': '#e7e9ea', 'muted': '#8b98a5'}
 }
 
 theme = THEMES[st.session_state.theme]
 
 st.markdown(f"""
 <style>
-    body {{
-        background-color: {theme['bg']};
-        color: {theme['text']};
-    }}
-    
+    body {{ background-color: {theme['bg']}; color: {theme['text']}; }}
     .main-header {{
-        font-size: 3rem;
-        font-weight: 800;
+        font-size: 3rem; font-weight: 800;
         background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-        -webkit-background-clip: text;
-        -webkit-text-fill-color: transparent;
-        margin-bottom: 0.3rem;
-        letter-spacing: -1px;
+        -webkit-background-clip: text; -webkit-text-fill-color: transparent;
+        margin-bottom: 0.3rem; letter-spacing: -1px;
     }}
-    
-    .subtitle {{
-        font-size: 1.1rem;
-        color: {theme['muted']};
-        margin-bottom: 2rem;
-        font-weight: 300;
-    }}
-    
+    .subtitle {{ font-size: 1.1rem; color: {theme['muted']}; margin-bottom: 2rem; font-weight: 300; }}
     .metric-card {{
         background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-        padding: 1.5rem;
-        border-radius: 15px;
-        color: white;
-        margin-bottom: 1rem;
-        box-shadow: 0 10px 30px rgba(102, 126, 234, 0.3);
-        transition: transform 0.3s ease;
+        padding: 1.5rem; border-radius: 15px; color: white; margin-bottom: 1rem;
+        box-shadow: 0 10px 30px rgba(102, 126, 234, 0.3); transition: transform 0.3s ease;
     }}
-    
-    .metric-card:hover {{
-        transform: translateY(-5px);
-    }}
-    
-    .metric-card.success {{
-        background: linear-gradient(135deg, #11998e 0%, #38ef7d 100%);
-        box-shadow: 0 10px 30px rgba(17, 153, 142, 0.3);
-    }}
-    
-    .metric-card.danger {{
-        background: linear-gradient(135deg, #eb3349 0%, #f45c43 100%);
-        box-shadow: 0 10px 30px rgba(235, 51, 73, 0.3);
-    }}
-    
-    .metric-card.info {{
-        background: linear-gradient(135deg, #4facfe 0%, #00f2fe 100%);
-        box-shadow: 0 10px 30px rgba(79, 172, 254, 0.3);
-    }}
-    
-    .metric-card.warning {{
-        background: linear-gradient(135deg, #f093fb 0%, #f5576c 100%);
-        box-shadow: 0 10px 30px rgba(245, 87, 108, 0.3);
-    }}
-    
+    .metric-card:hover {{ transform: translateY(-5px); }}
+    .metric-card.success {{ background: linear-gradient(135deg, #11998e 0%, #38ef7d 100%); box-shadow: 0 10px 30px rgba(17, 153, 142, 0.3); }}
+    .metric-card.danger {{ background: linear-gradient(135deg, #eb3349 0%, #f45c43 100%); box-shadow: 0 10px 30px rgba(235, 51, 73, 0.3); }}
+    .metric-card.info {{ background: linear-gradient(135deg, #4facfe 0%, #00f2fe 100%); box-shadow: 0 10px 30px rgba(79, 172, 254, 0.3); }}
+    .metric-card.warning {{ background: linear-gradient(135deg, #f093fb 0%, #f5576c 100%); box-shadow: 0 10px 30px rgba(245, 87, 108, 0.3); }}
     .info-box {{
         background: linear-gradient(135deg, #e0f7fa 0%, #b2ebf2 100%);
-        border-left: 5px solid #00bcd4;
-        padding: 1.2rem;
-        border-radius: 10px;
-        margin: 1rem 0;
-        box-shadow: 0 4px 15px rgba(0, 188, 212, 0.1);
+        border-left: 5px solid #00bcd4; padding: 1.2rem; border-radius: 10px; margin: 1rem 0;
     }}
-    
     .success-box {{
         background: linear-gradient(135deg, #e8f5e9 0%, #c8e6c9 100%);
-        border-left: 5px solid #4caf50;
-        padding: 1.2rem;
-        border-radius: 10px;
-        margin: 1rem 0;
-        box-shadow: 0 4px 15px rgba(76, 175, 80, 0.1);
+        border-left: 5px solid #4caf50; padding: 1.2rem; border-radius: 10px; margin: 1rem 0;
     }}
-    
     .error-box {{
         background: linear-gradient(135deg, #ffebee 0%, #ffcdd2 100%);
-        border-left: 5px solid #f44336;
-        padding: 1.2rem;
-        border-radius: 10px;
-        margin: 1rem 0;
-        box-shadow: 0 4px 15px rgba(244, 67, 54, 0.1);
+        border-left: 5px solid #f44336; padding: 1.2rem; border-radius: 10px; margin: 1rem 0;
     }}
-    
     .warning-box {{
         background: linear-gradient(135deg, #fff3e0 0%, #ffe0b2 100%);
-        border-left: 5px solid #ff9800;
-        padding: 1.2rem;
-        border-radius: 10px;
-        margin: 1rem 0;
-        box-shadow: 0 4px 15px rgba(255, 152, 0, 0.1);
+        border-left: 5px solid #ff9800; padding: 1.2rem; border-radius: 10px; margin: 1rem 0;
     }}
-    
     .stButton > button {{
-        background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-        color: white;
-        border: none;
-        padding: 0.8rem 1.5rem;
-        border-radius: 10px;
-        font-weight: 600;
-        transition: all 0.3s ease;
-        box-shadow: 0 4px 15px rgba(102, 126, 234, 0.3);
+        background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white;
+        border: none; padding: 0.8rem 1.5rem; border-radius: 10px; font-weight: 600;
+        transition: all 0.3s ease; box-shadow: 0 4px 15px rgba(102, 126, 234, 0.3);
     }}
-    
-    .stButton > button:hover {{
-        transform: translateY(-2px);
-        box-shadow: 0 6px 20px rgba(102, 126, 234, 0.4);
-    }}
-    
-    hr {{
-        border: none;
-        height: 2px;
-        background: linear-gradient(90deg, transparent, #667eea, transparent);
-        margin: 2rem 0;
-    }}
-    
-    @keyframes fadeIn {{
-        from {{ opacity: 0; transform: translateY(20px); }}
-        to {{ opacity: 1; transform: translateY(0); }}
-    }}
-    
-    .stSuccess, .stError, .stInfo, .stWarning {{
-        animation: fadeIn 0.5s ease;
-    }}
-    
-    @media (max-width: 768px) {{
-        .main-header {{
-            font-size: 2rem;
-        }}
-        .metric-card {{
-            padding: 1rem;
-        }}
-    }}
+    .stButton > button:hover {{ transform: translateY(-2px); box-shadow: 0 6px 20px rgba(102, 126, 234, 0.4); }}
+    hr {{ border: none; height: 2px; background: linear-gradient(90deg, transparent, #667eea, transparent); margin: 2rem 0; }}
+    @keyframes fadeIn {{ from {{ opacity: 0; transform: translateY(20px); }} to {{ opacity: 1; transform: translateY(0); }} }}
+    .stSuccess, .stError, .stInfo, .stWarning {{ animation: fadeIn 0.5s ease; }}
+    @media (max-width: 768px) {{ .main-header {{ font-size: 2rem; }} .metric-card {{ padding: 1rem; }} }}
 </style>
 """, unsafe_allow_html=True)
 
-# ===== ШАПКА =====
 st.markdown("""
 <div style="display: flex; align-items: center; gap: 20px; margin-bottom: 1rem;">
-    <div style="font-size: 4rem; filter: drop-shadow(0 4px 8px rgba(102, 126, 234, 0.3));">📐</div>
+    <div style="font-size: 4rem; filter: drop-shadow(0 4px 8px rgba(102, 126, 234, 0.3));"></div>
     <div style="flex: 1;">
         <div class="main-header">Geogeolevel</div>
         <div class="subtitle">Профессиональная обработка нивелирных ходов · Trimble DiNi</div>
@@ -752,11 +629,9 @@ st.markdown("""
 </div>
 """, unsafe_allow_html=True)
 
-# ===== SIDEBAR =====
 with st.sidebar:
     st.header("⚙️ Параметры")
     
-    # Переключатель темы
     theme_toggle = st.radio(
         "🎨 Тема оформления",
         options=["light", "dark"],
@@ -771,7 +646,7 @@ with st.sidebar:
     
     st.divider()
     
-    uploaded = st.file_uploader(" Загрузите файл .DAT", type=["dat", "txt"])
+    uploaded = st.file_uploader("📂 Загрузите файл .DAT", type=["dat", "txt"])
     
     st.divider()
     
@@ -779,22 +654,17 @@ with st.sidebar:
         "Класс нивелирования",
         options=["technical", "IV", "III", "II", "I"],
         format_func=lambda x: {
-            "technical": "Техническое",
-            "IV": "IV класс",
-            "III": "III класс",
-            "II": "II класс",
-            "I": "I класс",
+            "technical": "Техническое", "IV": "IV класс", "III": "III класс",
+            "II": "II класс", "I": "I класс",
         }[x],
-        index=0,
-        key="class_select"
+        index=0, key="class_select"
     )
     
     misclosure_mode = st.radio(
         "Режим расчета допуска",
         options=["distance", "stations"],
-        format_func=lambda x: "📏 По длине хода (км)" if x == "distance" else " По числу станций",
-        index=0,
-        key="misclosure_mode"
+        format_func=lambda x: " По длине хода (км)" if x == "distance" else "🔢 По числу станций",
+        index=0, key="misclosure_mode"
     )
     
     st.divider()
@@ -804,39 +674,30 @@ with st.sidebar:
     
     st.divider()
     
-    # Шаблоны
-    st.subheader("📋 Шаблоны настроек")
+    st.subheader(" Шаблоны настроек")
     template_name = st.text_input("Название шаблона", placeholder="Например: II класс по станциям")
     
     col_save, col_load = st.columns(2)
     with col_save:
         if st.button("💾 Сохранить", use_container_width=True):
             if template_name:
-                settings = {
-                    "level_class": level_class,
-                    "misclosure_mode": misclosure_mode
-                }
+                settings = {"level_class": level_class, "misclosure_mode": misclosure_mode}
                 TemplateManager.save_template(template_name, settings)
                 st.success(f"✅ Шаблон '{template_name}' сохранён!")
             else:
-                st.warning("Введите название шаблона")
+                st.warning("Введите название")
     
     with col_load:
         templates = TemplateManager.load_templates()
         if templates:
             selected_template = st.selectbox("Загрузить", [""] + list(templates.keys()), key="load_template")
             if selected_template and st.button("Загрузить", use_container_width=True):
-                # В реальном приложении здесь нужно было бы обновить виджеты
                 st.info(f"Шаблон '{selected_template}' загружен")
         else:
             st.caption("Нет сохранённых шаблонов")
-    
-    if templates:
-        st.caption(f"Сохранено шаблонов: {len(templates)}")
 
-# ===== ОСНОВНАЯ ЛОГИКА =====
 if not uploaded:
-    st.info(" Загрузите файл .DAT в панели слева для начала работы")
+    st.info("👈 Загрузите файл .DAT в панели слева для начала работы")
     st.stop()
 
 try:
@@ -855,7 +716,7 @@ try:
     st.info(f"📊 Найдено: **{len(measurements)}** измерений, **{len(stations)}** станций, **{len(runs)}** ход(ов)")
     
     if points_with_heights:
-        with st.expander("📍 Найденные исходные отметки"):
+        with st.expander(" Найденные исходные отметки"):
             for pt, h in sorted(points_with_heights.items()):
                 st.text(f"{pt}: {h:.5f} м")
     
@@ -881,12 +742,11 @@ try:
             } for p in result["points"]])
             all_dfs.append(df)
     
-    # ===== РЕЗУЛЬТАТЫ =====
     st.divider()
-    st.subheader("📊 Результаты уравнивания")
+    st.subheader(" Результаты уравнивания")
     
     for idx, result in enumerate(all_results):
-        closed_badge = "  ЗАМКНУТЫЙ" if result.get("is_closed") else ""
+        closed_badge = " 🔒 ЗАМКНУТЫЙ" if result.get("is_closed") else ""
         st.markdown(f"### Ход {result['run_id']}: {result['start_point']} → {result['end_point']}{closed_badge}")
         
         col1, col2, col3, col4 = st.columns(4)
@@ -902,7 +762,7 @@ try:
         with col2:
             st.markdown(f"""
             <div class="metric-card">
-                <div style="font-size: 0.9rem; opacity: 0.9;">🔢 Станций</div>
+                <div style="font-size: 0.9rem; opacity: 0.9;"> Станций</div>
                 <div style="font-size: 1.8rem; font-weight: 700;">{result['n_stations']}</div>
             </div>
             """, unsafe_allow_html=True)
@@ -935,10 +795,9 @@ try:
         else:
             st.markdown(f'<div class="error-box">🚨 {result["error"]}</div>', unsafe_allow_html=True)
         
-        # ===== КОНТРОЛЬ КАЧЕСТВА =====
         quality_issues = result.get("quality_issues", [])
         if quality_issues:
-            st.subheader(" Контроль качества")
+            st.subheader("🔍 Контроль качества")
             
             errors = [i for i in quality_issues if i.severity == 'error']
             warnings = [i for i in quality_issues if i.severity == 'warning']
@@ -949,25 +808,19 @@ try:
                     st.markdown(f"• **Станция {issue.station_id}** ({issue.point_from} → {issue.point_to}): {issue.message}")
             
             if warnings:
-                st.markdown(f'<div class="warning-box">⚠️ Найдено предупреждений: **{len(warnings)}**</div>', unsafe_allow_html=True)
-                for issue in warnings[:10]:  # Показываем первые 10
+                st.markdown(f'<div class="warning-box">️ Найдено предупреждений: **{len(warnings)}**</div>', unsafe_allow_html=True)
+                for issue in warnings[:10]:
                     st.markdown(f"• {issue.message}")
                 if len(warnings) > 10:
                     st.caption(f"... и ещё {len(warnings) - 10} предупреждений")
-            
-            if not errors and not warnings:
-                st.markdown('<div class="success-box">✅ Все измерения в допуске</div>', unsafe_allow_html=True)
         else:
             st.markdown('<div class="success-box">✅ Контроль качества пройден — все измерения в допуске</div>', unsafe_allow_html=True)
         
-        # Таблица
         if idx < len(all_dfs):
             st.dataframe(all_dfs[idx], use_container_width=True, hide_index=True)
         
-        # График
         if result.get("points"):
             fig = go.Figure()
-            
             distances = [p.distance_from_start for p in result["points"]]
             heights = [p.h_adjusted for p in result["points"]]
             point_ids = [p.point_id for p in result["points"]]
@@ -992,7 +845,6 @@ try:
             )
             st.plotly_chart(fig, use_container_width=True)
     
-    # ===== ЭКСПОРТ =====
     if all_dfs:
         st.divider()
         st.subheader("💾 Экспорт результатов")
@@ -1026,12 +878,11 @@ except Exception as e:
     import traceback
     st.code(traceback.format_exc())
 
-# ===== ФУТЕР =====
 st.divider()
 st.markdown(f"""
 <div style="display: flex; justify-content: space-between; color: {theme['muted']}; font-size: 0.9rem; padding: 1rem 0;">
     <span>📐 Geogeolevel v6.0</span>
     <span>📅 {datetime.now().strftime('%d.%m.%Y')}</span>
-    <span> Streamlit Cloud</span>
+    <span>⚡ Streamlit Cloud</span>
 </div>
 """, unsafe_allow_html=True)
