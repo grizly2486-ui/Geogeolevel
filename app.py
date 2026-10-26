@@ -1,135 +1,83 @@
 """
-GeoLevel Cloud v3.2 - Исправлен допуск для II класса (5*sqrt(L))
+Geogeolevel v4.0 - Обработка нивелирных ходов
+Поддержка Trimble DiNi BFFB, множественных ходов, промежуточных точек
 """
 
 import io
 import math
 import re
-from dataclasses import dataclass
-from typing import List, Optional, Tuple
+from collections import defaultdict
+from dataclasses import dataclass, field
+from typing import List, Optional, Dict, Tuple, Set
 
 import pandas as pd
 import plotly.graph_objects as go
+from plotly.subplots import make_subplots
 import streamlit as st
 
 
+# ============================================================
+# МОДЕЛИ ДАННЫХ
+# ============================================================
+
 @dataclass
-class LevelingStation:
-    point_from: str
-    point_to: str
-    dh_measured: float
+class RawMeasurement:
+    """Сырое измерение с станции"""
+    back_point: str
+    fore_point: str
+    back_reading: float
+    fore_reading: float
+    back_dist: float
+    fore_dist: float
+
+
+@dataclass
+class Station:
+    """Станция с усредненным превышением"""
+    station_id: int
+    back_point: str
+    fore_point: str
+    dh_mean: float
     distance: float
+    measurements: List[RawMeasurement] = field(default_factory=list)
+
+
+@dataclass
+class LevelingRun:
+    """Нивелирный ход"""
+    run_id: int
+    stations: List[Station]
+    start_point: str
+    end_point: str
 
 
 @dataclass
 class AdjustedPoint:
+    """Уравненная точка"""
     point_id: str
     h_original: Optional[float]
     h_adjusted: float
     correction: float
+    distance_from_start: float
 
 
-class LevelingAdjustment:
-    def __init__(self, h_start, h_end, stations, level_class="technical"):
-        self.h_start = h_start
-        self.h_end = h_end if h_end is not None else h_start
-        self.stations = stations
-        self.level_class = level_class
-
-    def calculate(self):
-        if not self.stations:
-            return {"error": "Нет данных для уравнивания"}
-
-        sum_dh = sum(s.dh_measured for s in self.stations)
-        sum_dist = sum(s.distance for s in self.stations)
-
-        if sum_dist == 0:
-            return {"error": "Сумма расстояний равна нулю"}
-
-        dh_theoretical = self.h_end - self.h_start
-        misclosure_m = sum_dh - dh_theoretical
-        misclosure_mm = misclosure_m * 1000
-
-        length_km = sum_dist / 1000.0
-        allowed_mm = self._get_allowed_misclosure(length_km)
-        is_valid = abs(misclosure_mm) <= allowed_mm
-
-        result = {
-            "sum_dh_m": round(sum_dh, 4),
-            "dh_theoretical_m": round(dh_theoretical, 4),
-            "misclosure_mm": round(misclosure_mm, 2),
-            "allowed_mm": round(allowed_mm, 2),
-            "length_km": round(length_km, 3),
-            "is_valid": is_valid,
-            "points": [],
-            "level_class": self.level_class,
-            "formula_used": self._get_formula_text(length_km)
-        }
-
-        if is_valid:
-            result["points"] = self._distribute_corrections(misclosure_m, sum_dist)
-        else:
-            result["error"] = f"Невязка {misclosure_mm:.2f} мм превышает допуск {allowed_mm:.2f} мм!"
-        return result
-
-    def _get_allowed_misclosure(self, length_km):
-        # ИСПРАВЛЕНО: II класс теперь 5.0 * sqrt(L) согласно СП 47.13330.2016
-        formulas = {
-            "I": 2.0 * math.sqrt(length_km),
-            "II": 5.0 * math.sqrt(length_km),
-            "III": 10.0 * math.sqrt(length_km),
-            "IV": 20.0 * math.sqrt(length_km),
-            "technical": 50.0 * math.sqrt(length_km),
-        }
-        return formulas.get(self.level_class, 50.0 * math.sqrt(length_km))
-
-    def _get_formula_text(self, length_km):
-        coeffs = {
-            "I": "2.0", "II": "5.0", "III": "10.0", 
-            "IV": "20.0", "technical": "50.0"
-        }
-        coeff = coeffs.get(self.level_class, "50.0")
-        return f"f_доп = ±{coeff} × √{length_km:.3f} = ±{self._get_allowed_misclosure(length_km):.2f} мм"
-
-    def _distribute_corrections(self, misclosure_m, sum_dist):
-        points = []
-        current_h = self.h_start
-        points.append(AdjustedPoint(
-            point_id=self.stations[0].point_from,
-            h_original=self.h_start,
-            h_adjusted=self.h_start,
-            correction=0.0
-        ))
-
-        for station in self.stations:
-            correction_m = -misclosure_m * (station.distance / sum_dist)
-            dh_adjusted = station.dh_measured + correction_m
-            current_h += dh_adjusted
-            points.append(AdjustedPoint(
-                point_id=station.point_to,
-                h_original=None,
-                h_adjusted=round(current_h, 4),
-                correction=round(correction_m, 4)
-            ))
-
-        if len(points) > 1:
-            points[-1].h_adjusted = self.h_end
-            last_dh_adj = self.h_end - points[-2].h_adjusted
-            points[-1].correction = last_dh_adj - self.stations[-1].dh_measured
-        return points
-
+# ============================================================
+# ПАРСЕР TRIMBLE DINI BFFB
+# ============================================================
 
 class TrimbleDiniBFFBParser:
-    def __init__(self, raw_bytes):
+    """Парсер для формата Trimble DiNi Start-Line BFFB"""
+    
+    def __init__(self, raw_bytes: bytes):
         self.raw_bytes = raw_bytes
 
-    def parse(self):
+    def parse(self) -> Tuple[str, List[RawMeasurement], Dict[str, float]]:
         text = self._decode_text()
         lines = text.splitlines()
         
-        stations = []
-        job_name = "Unknown Job"
+        measurements = []
         points_with_heights = {}
+        job_name = "Unknown Job"
         
         for line in lines[:5]:
             if 'TO' in line and '.dat' in line.lower():
@@ -173,23 +121,22 @@ class TrimbleDiniBFFBParser:
                     fore_reading = float(rf_match.group(1))
                     fore_dist = float(rf_match.group(2))
                     
-                    dh = current_back_reading - fore_reading
-                    dist = current_back_dist + fore_dist
-                    
-                    stations.append(LevelingStation(
-                        point_from=current_back_point,
-                        point_to=fore_point,
-                        dh_measured=round(dh, 5),
-                        distance=round(dist, 3)
+                    measurements.append(RawMeasurement(
+                        back_point=current_back_point,
+                        fore_point=fore_point,
+                        back_reading=current_back_reading,
+                        fore_reading=fore_reading,
+                        back_dist=current_back_dist,
+                        fore_dist=fore_dist
                     ))
                     
                     current_back_point = None
                     current_back_reading = None
                     current_back_dist = None
         
-        return job_name, stations, points_with_heights
+        return job_name, measurements, points_with_heights
 
-    def _decode_text(self):
+    def _decode_text(self) -> str:
         for enc in ['utf-8', 'windows-1251', 'cp1251', 'latin-1']:
             try:
                 return self.raw_bytes.decode(enc)
@@ -198,28 +145,298 @@ class TrimbleDiniBFFBParser:
         return self.raw_bytes.decode('latin-1', errors='ignore')
 
 
-def get_demo_stations():
-    return [
-        LevelingStation("RP12", "X1", -1.45702, 73.504),
-        LevelingStation("X1", "X2", -0.70624, 77.837),
-        LevelingStation("X2", "RP22", 0.66686, 67.408),
-    ]
+# ============================================================
+# АНАЛИЗАТОР СТРУКТУРЫ ХОДОВ
+# ============================================================
+
+class RunAnalyzer:
+    """Анализирует измерения и определяет структуру ходов"""
+    
+    def __init__(self, measurements: List[RawMeasurement], points_with_heights: Dict[str, float]):
+        self.measurements = measurements
+        self.points_with_heights = points_with_heights
+    
+    def group_into_stations(self) -> List[Station]:
+        station_groups = defaultdict(list)
+        
+        for m in self.measurements:
+            key = (m.back_point, m.fore_point)
+            station_groups[key].append(m)
+        
+        stations = []
+        for idx, ((back_pt, fore_pt), meas_list) in enumerate(station_groups.items(), 1):
+            dh_values = [m.back_reading - m.fore_reading for m in meas_list]
+            dist_values = [m.back_dist + m.fore_dist for m in meas_list]
+            
+            dh_mean = sum(dh_values) / len(dh_values)
+            dist_mean = sum(dist_values) / len(dist_values)
+            
+            stations.append(Station(
+                station_id=idx,
+                back_point=back_pt,
+                fore_point=fore_point,
+                dh_mean=dh_mean,
+                distance=dist_mean,
+                measurements=meas_list
+            ))
+        
+        return stations
+    
+    def identify_runs(self, stations: List[Station]) -> List[LevelingRun]:
+        if not stations:
+            return []
+        
+        graph = defaultdict(set)
+        for s in stations:
+            graph[s.back_point].add(s.fore_point)
+            graph[s.fore_point].add(s.back_point)
+        
+        visited = set()
+        runs = []
+        run_id = 1
+        
+        for station in stations:
+            if station.back_point not in visited:
+                component_stations = []
+                queue = [station.back_point]
+                component_points = set()
+                
+                while queue:
+                    point = queue.pop(0)
+                    if point in visited:
+                        continue
+                    visited.add(point)
+                    component_points.add(point)
+                    
+                    for s in stations:
+                        if s.back_point == point or s.fore_point == point:
+                            if s not in component_stations:
+                                component_stations.append(s)
+                                other_point = s.fore_point if s.back_point == point else s.back_point
+                                if other_point not in visited:
+                                    queue.append(other_point)
+                
+                ordered_stations = self._order_stations(component_stations, component_points)
+                
+                if ordered_stations:
+                    runs.append(LevelingRun(
+                        run_id=run_id,
+                        stations=ordered_stations,
+                        start_point=ordered_stations[0].back_point,
+                        end_point=ordered_stations[-1].fore_point
+                    ))
+                    run_id += 1
+        
+        return runs
+    
+    def _order_stations(self, stations: List[Station], points: Set[str]) -> List[Station]:
+        if not stations:
+            return []
+        
+        start_candidates = [s.back_point for s in stations if s.back_point in self.points_with_heights]
+        
+        if start_candidates:
+            start_point = start_candidates[0]
+        else:
+            start_point = stations[0].back_point
+        
+        ordered = []
+        current_point = start_point
+        used_stations = set()
+        
+        while True:
+            next_station = None
+            for s in stations:
+                if s.back_point == current_point and id(s) not in used_stations:
+                    next_station = s
+                    break
+            
+            if next_station is None:
+                break
+            
+            ordered.append(next_station)
+            used_stations.add(id(next_station))
+            current_point = next_station.fore_point
+        
+        return ordered
 
 
-# ============ ИНТЕРФЕЙС ============
-st.set_page_config(page_title="GeoLevel Cloud", page_icon="📐", layout="wide")
-st.title("📐 GeoLevel Cloud v3.2")
-st.caption("Trimble DiNi BFFB · Уравнивание · Отчёты (Нормы СП 47.13330.2016)")
+# ============================================================
+# УРАВНИВАТЕЛЬ
+# ============================================================
+
+class LevelingAdjustment:
+    def __init__(self, run: LevelingRun, h_start: float, h_end: Optional[float],
+                 level_class: str = "technical", misclosure_mode: str = "distance"):
+        self.run = run
+        self.h_start = h_start
+        self.h_end = h_end if h_end is not None else h_start
+        self.level_class = level_class
+        self.misclosure_mode = misclosure_mode
+
+    def calculate(self) -> dict:
+        if not self.run.stations:
+            return {"error": "Нет станций в ходе"}
+
+        sum_dh = sum(s.dh_mean for s in self.run.stations)
+        sum_dist = sum(s.distance for s in self.run.stations)
+        n_stations = len(self.run.stations)
+
+        if sum_dist == 0:
+            return {"error": "Сумма расстояний равна нулю"}
+
+        dh_theoretical = self.h_end - self.h_start
+        misclosure_m = sum_dh - dh_theoretical
+        misclosure_mm = misclosure_m * 1000
+
+        if self.misclosure_mode == "stations":
+            allowed_mm = self._get_allowed_by_stations(n_stations)
+            length_km = sum_dist / 1000.0
+        else:
+            length_km = sum_dist / 1000.0
+            allowed_mm = self._get_allowed_by_distance(length_km)
+
+        is_valid = abs(misclosure_mm) <= allowed_mm
+
+        result = {
+            "run_id": self.run.run_id,
+            "start_point": self.run.start_point,
+            "end_point": self.run.end_point,
+            "sum_dh_m": round(sum_dh, 4),
+            "dh_theoretical_m": round(dh_theoretical, 4),
+            "misclosure_mm": round(misclosure_mm, 2),
+            "allowed_mm": round(allowed_mm, 2),
+            "length_km": round(length_km, 3),
+            "n_stations": n_stations,
+            "is_valid": is_valid,
+            "points": [],
+            "level_class": self.level_class,
+            "misclosure_mode": self.misclosure_mode,
+            "formula_used": self._get_formula_text(length_km, n_stations)
+        }
+
+        if is_valid:
+            result["points"] = self._distribute_corrections(misclosure_m, sum_dist)
+        else:
+            result["error"] = f"Невязка {misclosure_mm:.2f} мм превышает допуск {allowed_mm:.2f} мм!"
+
+        return result
+
+    def _get_allowed_by_distance(self, length_km: float) -> float:
+        formulas = {
+            "I": 2.0 * math.sqrt(length_km),
+            "II": 5.0 * math.sqrt(length_km),
+            "III": 10.0 * math.sqrt(length_km),
+            "IV": 20.0 * math.sqrt(length_km),
+            "technical": 50.0 * math.sqrt(length_km),
+        }
+        return formulas.get(self.level_class, 50.0 * math.sqrt(length_km))
+
+    def _get_allowed_by_stations(self, n_stations: int) -> float:
+        formulas = {
+            "I": 0.5 * math.sqrt(n_stations),
+            "II": 0.5 * math.sqrt(n_stations),
+            "III": 1.0 * math.sqrt(n_stations),
+            "IV": 2.0 * math.sqrt(n_stations),
+            "technical": 5.0 * math.sqrt(n_stations),
+        }
+        return formulas.get(self.level_class, 5.0 * math.sqrt(n_stations))
+
+    def _get_formula_text(self, length_km: float, n_stations: int) -> str:
+        if self.misclosure_mode == "stations":
+            coeffs = {"I": "0.5", "II": "0.5", "III": "1.0", "IV": "2.0", "technical": "5.0"}
+            coeff = coeffs.get(self.level_class, "5.0")
+            return f"f_доп = ±{coeff} × √{n_stations} = ±{self._get_allowed_by_stations(n_stations):.2f} мм"
+        else:
+            coeffs = {"I": "2.0", "II": "5.0", "III": "10.0", "IV": "20.0", "technical": "50.0"}
+            coeff = coeffs.get(self.level_class, "50.0")
+            return f"f_доп = ±{coeff} × √{length_km:.3f} = ±{self._get_allowed_by_distance(length_km):.2f} мм"
+
+    def _distribute_corrections(self, misclosure_m: float, sum_dist: float) -> List[AdjustedPoint]:
+        points = []
+        current_h = self.h_start
+        cumulative_dist = 0.0
+
+        points.append(AdjustedPoint(
+            point_id=self.run.stations[0].back_point,
+            h_original=self.h_start,
+            h_adjusted=self.h_start,
+            correction=0.0,
+            distance_from_start=0.0
+        ))
+
+        for station in self.run.stations:
+            correction_m = -misclosure_m * (station.distance / sum_dist)
+            dh_adjusted = station.dh_mean + correction_m
+            current_h += dh_adjusted
+            cumulative_dist += station.distance
+
+            points.append(AdjustedPoint(
+                point_id=station.fore_point,
+                h_original=None,
+                h_adjusted=round(current_h, 4),
+                correction=round(correction_m, 4),
+                distance_from_start=cumulative_dist
+            ))
+
+        if len(points) > 1:
+            points[-1].h_adjusted = self.h_end
+            last_dh_adj = self.h_end - points[-2].h_adjusted
+            points[-1].correction = last_dh_adj - self.run.stations[-1].dh_mean
+
+        return points
+
+
+# ============================================================
+# ИНТЕРФЕЙС
+# ============================================================
+
+st.set_page_config(page_title="Geogeolevel", page_icon="📐", layout="wide")
+
+st.markdown("""
+<style>
+    .main-header {
+        font-size: 2.5rem;
+        font-weight: 700;
+        color: #1f77b4;
+        margin-bottom: 0.5rem;
+    }
+    .subtitle {
+        font-size: 1.1rem;
+        color: #666;
+        margin-bottom: 2rem;
+    }
+    .info-box {
+        background: #d1ecf1;
+        border-left: 4px solid #17a2b8;
+        padding: 1rem;
+        border-radius: 5px;
+        margin: 1rem 0;
+    }
+    .success-box {
+        background: #d4edda;
+        border-left: 4px solid #28a745;
+        padding: 1rem;
+        border-radius: 5px;
+        margin: 1rem 0;
+    }
+    .error-box {
+        background: #f8d7da;
+        border-left: 4px solid #dc3545;
+        padding: 1rem;
+        border-radius: 5px;
+        margin: 1rem 0;
+    }
+</style>
+""", unsafe_allow_html=True)
+
+st.markdown('<div class="main-header">📐 Geogeolevel</div>', unsafe_allow_html=True)
+st.markdown('<div class="subtitle">Обработка нивелирных ходов · Trimble DiNi BFFB · Уравнивание · Отчёты</div>', unsafe_allow_html=True)
 
 with st.sidebar:
-    st.header("⚙️ Параметры хода")
+    st.header("⚙️ Параметры")
     
-    data_source = st.radio(
-        "Источник данных",
-        ["📂 Файл DiNi (.DAT)", "📝 Ввести вручную", "🎮 Демо-данные"],
-        index=2,
-        key="source_radio"
-    )
+    uploaded = st.file_uploader("📂 Загрузите файл .DAT", type=["dat", "txt"])
     
     st.divider()
     
@@ -227,141 +444,130 @@ with st.sidebar:
         "Класс нивелирования",
         options=["technical", "IV", "III", "II", "I"],
         format_func=lambda x: {
-            "technical": "Техническое (±50√L)",
-            "IV": "IV класс (±20√L)",
-            "III": "III класс (±10√L)",
-            "II": "II класс (±5√L)",
-            "I": "I класс (±2√L)",
+            "technical": "Техническое",
+            "IV": "IV класс",
+            "III": "III класс",
+            "II": "II класс",
+            "I": "I класс",
         }[x],
         index=0,
         key="class_select"
     )
     
-    st.divider()
-    
-    h_start = st.number_input("H начальной точки (м)", value=100.000, format="%.3f", key="h_start")
-    h_end = st.number_input("H конечной точки (м)", value=99.500, format="%.3f", key="h_end")
-
-stations = []
-job_name = "Ручной ввод"
-points_heights = {}
-
-if data_source.startswith("📂"):
-    uploaded = st.file_uploader("Загрузите файл .DAT", type=["dat", "txt"], key="file_uploader")
-    if uploaded:
-        try:
-            parser = TrimbleDiniBFFBParser(uploaded.read())
-            job_name, stations, points_heights = parser.parse()
-            
-            st.success(f"✅ Файл прочитан. Работа: **{job_name}**")
-            st.info(f"📊 Станций: {len(stations)} | Точек с отметками: {len(points_heights)}")
-            
-            if points_heights:
-                with st.expander("📍 Найденные исходные отметки"):
-                    for pt, h in points_heights.items():
-                        st.text(f"{pt}: {h:.5f} м")
-            
-            if len(stations) == 0:
-                st.warning("⚠️ Не найдено превышений. Проверь формат файла.")
-                
-        except Exception as e:
-            st.error(f"❌ Ошибка парсинга: {e}")
-
-elif data_source.startswith("📝"):
-    st.info("Формат: `Откуда, Куда, Превышение (м), Расстояние (м)`")
-    raw_text = st.text_area(
-        "Данные",
-        value="RP12, X1, -1.457, 73.5\nX1, X2, -0.706, 77.8\nX2, RP22, 0.667, 67.4",
-        height=200,
-        key="manual_data"
+    misclosure_mode = st.radio(
+        "Режим расчета допуска",
+        options=["distance", "stations"],
+        format_func=lambda x: "По длине хода (км)" if x == "distance" else "По числу станций",
+        index=0,
+        key="misclosure_mode"
     )
-    if st.button("Распарсить данные", key="parse_btn"):
-        prev = None
-        for line in raw_text.strip().splitlines():
-            parts = [p.strip() for p in line.split(',')]
-            if len(parts) == 4:
-                try:
-                    if prev is None:
-                        prev = parts[0]
-                    stations.append(LevelingStation(prev, parts[0], float(parts[2]), float(parts[3])))
-                    prev = parts[0]
-                except ValueError:
-                    pass
-        if stations:
-            st.success(f"✅ Распознано {len(stations)} станций")
-
-else:
-    stations = get_demo_stations()
-    st.info("🎮 Используются демо-данные (3 станции)")
-
-# ============ РАСЧЕТ И РЕЗУЛЬТАТЫ ============
-if stations:
-    calc_h_start = h_start
-    calc_h_end = h_end
-    
-    if points_heights and len(stations) > 0:
-        first_point = stations[0].point_from
-        last_point = stations[-1].point_to
-        if first_point in points_heights:
-            calc_h_start = points_heights[first_point]
-        if last_point in points_heights:
-            calc_h_end = points_heights[last_point]
     
     st.divider()
-    st.subheader(f"⚙️ Выбранный класс: **{level_class.upper()}**")
     
-    engine = LevelingAdjustment(calc_h_start, calc_h_end, stations, level_class)
-    result = engine.calculate()
+    h_start_override = st.number_input("H начальной (м, необязательно)", value=None, format="%.3f", key="h_start")
+    h_end_override = st.number_input("H конечной (м, необязательно)", value=None, format="%.3f", key="h_end")
 
-    if "error" in result and not result.get("points"):
-        st.error(f"🚨 {result['error']}")
-    else:
-        st.subheader(f"📊 Отчёт по работе: {job_name}")
+if not uploaded:
+    st.info("👈 Загрузите файл .DAT в панели слева для начала работы")
+    st.stop()
+
+try:
+    parser = TrimbleDiniBFFBParser(uploaded.read())
+    job_name, measurements, points_with_heights = parser.parse()
+    
+    st.success(f"✅ Файл прочитан: **{job_name}**")
+    
+    analyzer = RunAnalyzer(measurements, points_with_heights)
+    stations = analyzer.group_into_stations()
+    runs = analyzer.identify_runs(stations)
+    
+    st.info(f"📊 Найдено: **{len(measurements)}** измерений, **{len(stations)}** станций, **{len(runs)}** ход(ов)")
+    
+    if points_with_heights:
+        with st.expander("📍 Найденные исходные отметки"):
+            for pt, h in sorted(points_with_heights.items()):
+                st.text(f"{pt}: {h:.5f} м")
+    
+    all_results = []
+    all_dfs = []
+    
+    for run in runs:
+        h_start = h_start_override if h_start_override is not None else points_with_heights.get(run.start_point, 100.000)
+        h_end = h_end_override if h_end_override is not None else points_with_heights.get(run.end_point, None)
         
-        col_info1, col_info2 = st.columns(2)
-        with col_info1:
-            st.metric("Длина хода", f"{result['length_km']:.3f} км")
-            st.metric("Σ превышений", f"{result['sum_dh_m']:.4f} м")
-        with col_info2:
-            st.metric("Невязка fh", f"{result['misclosure_mm']:.2f} мм")
-            st.metric("Допуск f_доп", f"±{result['allowed_mm']:.2f} мм")
+        engine = LevelingAdjustment(run, h_start, h_end, level_class, misclosure_mode)
+        result = engine.calculate()
+        all_results.append(result)
         
-        st.info(f"📐 Формула допуска ({result['level_class'].upper()}): `{result['formula_used']}`")
+        if result.get("points"):
+            df = pd.DataFrame([{
+                "Ход": f"Ход {result['run_id']}",
+                "Точка": p.point_id,
+                "H исх., м": f"{p.h_original:.5f}" if p.h_original else "—",
+                "Поправка, мм": round(p.correction * 1000, 2),
+                "H уравн., м": round(p.h_adjusted, 4),
+                "Расст., м": round(p.distance_from_start, 1),
+            } for p in result["points"]])
+            all_dfs.append(df)
+    
+    st.divider()
+    st.subheader("📊 Результаты уравнивания")
+    
+    for idx, result in enumerate(all_results):
+        st.markdown(f"### Ход {result['run_id']}: {result['start_point']} → {result['end_point']}")
+        
+        col1, col2, col3, col4 = st.columns(4)
+        col1.metric("Длина хода", f"{result['length_km']:.3f} км")
+        col2.metric("Число станций", result['n_stations'])
+        col3.metric("Невязка fh", f"{result['misclosure_mm']:.2f} мм")
+        col4.metric("Допуск", f"±{result['allowed_mm']:.2f} мм")
+        
+        st.markdown(f'<div class="info-box"> {result["formula_used"]}</div>', unsafe_allow_html=True)
         
         if result["is_valid"]:
-            st.success("✅ Невязка в допуске — ход уравнен!")
+            st.markdown('<div class="success-box">✅ Невязка в допуске — ход уравнен</div>', unsafe_allow_html=True)
         else:
-            st.error(f"🚨 {result['error']}")
-
-        df = pd.DataFrame([{
-            "Точка": p.point_id,
-            "H исх., м": f"{p.h_original:.5f}" if p.h_original else "—",
-            "Поправка, мм": round(p.correction * 1000, 2),
-            "H уравненная, м": round(p.h_adjusted, 4),
-        } for p in result["points"]])
-
-        st.dataframe(df, use_container_width=True, hide_index=True)
-
-        fig = go.Figure()
-        fig.add_trace(go.Scatter(
-            x=df["Точка"], y=df["H уравненная, м"],
-            mode="lines+markers+text",
-            text=[f"{v:.3f}" for v in df["H уравненная, м"]],
-            textposition="top center",
-            line=dict(color="#1f77b4", width=2),
-            marker=dict(size=10)
-        ))
-        fig.update_layout(
-            title="Продольный профиль нивелирного хода",
-            xaxis_title="Точки", yaxis_title="Отметка, м",
-            height=400, template="plotly_white"
-        )
-        st.plotly_chart(fig, use_container_width=True)
-
+            st.markdown(f'<div class="error-box">🚨 {result["error"]}</div>', unsafe_allow_html=True)
+        
+        if idx < len(all_dfs):
+            st.dataframe(all_dfs[idx], use_container_width=True, hide_index=True)
+        
+        if result.get("points"):
+            fig = go.Figure()
+            
+            distances = [p.distance_from_start for p in result["points"]]
+            heights = [p.h_adjusted for p in result["points"]]
+            point_ids = [p.point_id for p in result["points"]]
+            
+            fig.add_trace(go.Scatter(
+                x=distances, y=heights,
+                mode="lines+markers+text",
+                text=point_ids,
+                textposition="top center",
+                name=f"Ход {result['run_id']}",
+                line=dict(color="#1f77b4", width=2),
+                marker=dict(size=10)
+            ))
+            
+            fig.update_layout(
+                title=f"Профиль хода {result['run_id']}",
+                xaxis_title="Расстояние от начала, м",
+                yaxis_title="Отметка, м",
+                height=400,
+                template="plotly_white",
+                showlegend=False
+            )
+            st.plotly_chart(fig, use_container_width=True)
+    
+    if all_dfs:
+        st.divider()
         st.subheader("💾 Экспорт результатов")
+        
+        combined_df = pd.concat(all_dfs, ignore_index=True)
+        
         col_a, col_b = st.columns(2)
         
-        csv = df.to_csv(index=False).encode('utf-8-sig')
+        csv = combined_df.to_csv(index=False).encode('utf-8-sig')
         col_a.download_button(
             "📥 Скачать CSV",
             data=csv,
@@ -372,7 +578,7 @@ if stations:
         
         buffer = io.BytesIO()
         with pd.ExcelWriter(buffer, engine='openpyxl') as writer:
-            df.to_excel(writer, sheet_name='Отчёт', index=False)
+            combined_df.to_excel(writer, sheet_name='Отчёт', index=False)
         col_b.download_button(
             "📥 Скачать Excel",
             data=buffer.getvalue(),
@@ -380,8 +586,11 @@ if stations:
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
             use_container_width=True
         )
-else:
-    st.info("⬅️ Загрузите данные в панели слева или выберите источник")
+
+except Exception as e:
+    st.error(f"❌ Ошибка обработки: {e}")
+    import traceback
+    st.code(traceback.format_exc())
 
 st.divider()
-st.caption("GeoLevel Cloud v3.2 · Нормы СП 47.13330.2016")
+st.caption("Geogeolevel v4.0 · Обработка нивелирных ходов")
