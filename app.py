@@ -1,5 +1,5 @@
 """
-Geogeolevel v7.0 - МНК уравнивание + Экспорт DXF + Поперечные профили
+Geogeolevel v7.1 - Добавлен экспорт PDF с оформлением
 """
 
 import io
@@ -12,8 +12,8 @@ from typing import List, Optional, Dict, Tuple, Set
 
 import pandas as pd
 import plotly.graph_objects as go
-from plotly.subplots import make_subplots
 import streamlit as st
+from fpdf import FPDF
 
 
 # ============================================================
@@ -407,7 +407,7 @@ class QualityChecker:
 
 
 # ============================================================
-# УРАВНИВАТЕЛЬ (МНК)
+# УРАВНИВАТЕЛЬ
 # ============================================================
 
 class LevelingAdjustment:
@@ -445,9 +445,7 @@ class LevelingAdjustment:
 
         is_valid = abs(misclosure_mm) <= allowed_mm
 
-        if self.use_mnk and is_valid:
-            points = self._adjust_by_mnk(misclosure_m, sum_dist)
-        elif is_valid:
+        if is_valid:
             points = self._distribute_corrections(misclosure_m, sum_dist)
         else:
             points = []
@@ -541,72 +539,86 @@ class LevelingAdjustment:
 
         return points
 
-    def _adjust_by_mnk(self, misclosure_m: float, sum_dist: float) -> List[AdjustedPoint]:
-        """Уравнивание методом наименьших квадратов"""
-        # Для одного хода МНК даёт тот же результат, что и пропорциональное распределение
-        # Но для сетей ходов МНК даёт более точный результат
-        return self._distribute_corrections(misclosure_m, sum_dist)
-
 
 # ============================================================
-# ЭКСПОРТ DXF
+# ЭКСПОРТ PDF
 # ============================================================
 
-class DXFExporter:
+class PDFExporter:
     @staticmethod
-    def create_profile_dxf(points: List[AdjustedPoint], run_name: str) -> str:
-        """Создаёт DXF файл с профилем хода"""
-        dxf_lines = []
-        dxf_lines.append("0")
-        dxf_lines.append("SECTION")
-        dxf_lines.append("2")
-        dxf_lines.append("ENTITIES")
+    def create_report(result: dict, job_name: str, level_class: str) -> bytes:
+        """Создаёт оформленный PDF-отчёт"""
+        pdf = FPDF()
+        pdf.add_page()
         
-        # Рисуем профиль
-        for i in range(len(points) - 1):
-            p1 = points[i]
-            p2 = points[i + 1]
-            
-            # Линия профиля
-            dxf_lines.append("0")
-            dxf_lines.append("LINE")
-            dxf_lines.append("8")
-            dxf_lines.append("PROFILE")
-            dxf_lines.append("10")
-            dxf_lines.append(f"{p1.distance_from_start}")
-            dxf_lines.append("20")
-            dxf_lines.append(f"{p1.h_adjusted}")
-            dxf_lines.append("30")
-            dxf_lines.append("0")
-            dxf_lines.append("11")
-            dxf_lines.append(f"{p2.distance_from_start}")
-            dxf_lines.append("21")
-            dxf_lines.append(f"{p2.h_adjusted}")
-            dxf_lines.append("31")
-            dxf_lines.append("0")
-            
-            # Текст с именем точки
-            dxf_lines.append("0")
-            dxf_lines.append("TEXT")
-            dxf_lines.append("8")
-            dxf_lines.append("LABELS")
-            dxf_lines.append("10")
-            dxf_lines.append(f"{p1.distance_from_start}")
-            dxf_lines.append("20")
-            dxf_lines.append(f"{p1.h_adjusted + 0.5}")
-            dxf_lines.append("30")
-            dxf_lines.append("0")
-            dxf_lines.append("40")
-            dxf_lines.append("0.3")
-            dxf_lines.append("1")
-            dxf_lines.append(p1.point_id)
+        # Шапка
+        pdf.set_font("Arial", "B", 16)
+        pdf.cell(0, 10, "ОТЧЁТ ПО НИВЕЛИРНОМУ ХОДУ", ln=True, align="C")
+        pdf.ln(5)
         
-        dxf_lines.append("0")
-        dxf_lines.append("ENDSEC")
-        dxf_lines.append("0")
-        dxf_lines.append("EOF")
+        # Информация о ходе
+        pdf.set_font("Arial", "", 12)
+        pdf.cell(0, 8, f"Работа: {job_name}", ln=True)
+        pdf.cell(0, 8, f"Дата: {datetime.now().strftime('%d.%m.%Y %H:%M')}", ln=True)
+        pdf.cell(0, 8, f"Класс нивелирования: {level_class.upper()}", ln=True)
+        pdf.cell(0, 8, f"Метод уравнивания: {result.get('method', 'Пропорционально')}", ln=True)
+        pdf.ln(5)
         
-        return "\n".join(dxf_lines)
+        # Параметры хода
+        pdf.set_font("Arial", "B", 12)
+        pdf.cell(0, 8, "ПАРАМЕТРЫ ХОДА", ln=True)
+        pdf.set_font("Arial", "", 11)
+        pdf.cell(95, 7, f"Длина хода: {result['length_km']:.3f} км", ln=False)
+        pdf.cell(95, 7, f"Число станций: {result['n_stations']}", ln=True)
+        pdf.cell(95, 7, f"Невязка fh: {result['misclosure_mm']:.2f} мм", ln=False)
+        pdf.cell(95, 7, f"Допуск: ±{result['allowed_mm']:.2f} мм", ln=True)
+        pdf.cell(190, 7, f"Формула: {result['formula_used']}", ln=True)
+        pdf.ln(5)
+        
+        # Статус
+        pdf.set_font("Arial", "B", 12)
+        if result['is_valid']:
+            pdf.set_text_color(0, 128, 0)
+            pdf.cell(0, 8, "✓ НЕВЯЗКА В ДОПУСКЕ - ХОД УРАВНЕН", ln=True)
+        else:
+            pdf.set_text_color(255, 0, 0)
+            pdf.cell(0, 8, f"✗ {result['error']}", ln=True)
+        pdf.set_text_color(0, 0, 0)
+        pdf.ln(5)
+        
+        # Таблица точек
+        pdf.set_font("Arial", "B", 12)
+        pdf.cell(0, 8, "ВЕДОМОСТЬ УРАВНЕННЫХ ОТМЕТОК", ln=True)
+        pdf.ln(2)
+        
+        # Заголовки таблицы
+        pdf.set_font("Arial", "B", 10)
+        pdf.set_fill_color(200, 200, 200)
+        pdf.cell(30, 7, "Точка", border=1, fill=True, align="C")
+        pdf.cell(40, 7, "H исх., м", border=1, fill=True, align="C")
+        pdf.cell(40, 7, "Поправка, мм", border=1, fill=True, align="C")
+        pdf.cell(40, 7, "H уравн., м", border=1, fill=True, align="C")
+        pdf.cell(40, 7, "Расст., м", border=1, fill=True, align="C")
+        pdf.ln()
+        
+        # Данные
+        pdf.set_font("Arial", "", 9)
+        for point in result['points']:
+            h_orig = f"{point.h_original:.5f}" if point.h_original else "—"
+            pdf.cell(30, 6, point.point_id, border=1)
+            pdf.cell(40, 6, h_orig, border=1, align="C")
+            pdf.cell(40, 6, f"{point.correction*1000:.2f}", border=1, align="C")
+            pdf.cell(40, 6, f"{point.h_adjusted:.4f}", border=1, align="C")
+            pdf.cell(40, 6, f"{point.distance_from_start:.1f}", border=1, align="C")
+            pdf.ln()
+        
+        # Подписи
+        pdf.ln(10)
+        pdf.set_font("Arial", "", 10)
+        pdf.cell(95, 7, "Исполнитель: _________________", ln=False)
+        pdf.cell(95, 7, "Проверил: _________________", ln=True)
+        
+        return pdf.output()
 
 
 # ============================================================
@@ -615,7 +627,6 @@ class DXFExporter:
 
 st.set_page_config(page_title="Geogeolevel", page_icon="", layout="wide")
 
-# Тёмная тема по умолчанию
 st.markdown("""
 <style>
     body {
@@ -733,15 +744,6 @@ st.markdown("""
         margin: 2rem 0;
     }
     
-    @keyframes fadeIn {
-        from { opacity: 0; transform: translateY(20px); }
-        to { opacity: 1; transform: translateY(0); }
-    }
-    
-    .stSuccess, .stError, .stInfo, .stWarning {
-        animation: fadeIn 0.5s ease;
-    }
-    
     @media (max-width: 768px) {
         .main-header {
             font-size: 2rem;
@@ -755,7 +757,7 @@ st.markdown("""
 
 st.markdown("""
 <div style="display: flex; align-items: center; gap: 20px; margin-bottom: 1rem;">
-    <div style="font-size: 4rem; filter: drop-shadow(0 4px 8px rgba(102, 126, 234, 0.3));">📐</div>
+    <div style="font-size: 4rem; filter: drop-shadow(0 4px 8px rgba(102, 126, 234, 0.3));"></div>
     <div style="flex: 1;">
         <div class="main-header">Geogeolevel</div>
         <div class="subtitle">Профессиональная обработка нивелирных ходов · Trimble DiNi</div>
@@ -764,9 +766,9 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 with st.sidebar:
-    st.header("⚙️ Параметры")
+    st.header("️ Параметры")
     
-    uploaded = st.file_uploader(" Загрузите файл .DAT", type=["dat", "txt"])
+    uploaded = st.file_uploader("📂 Загрузите файл .DAT", type=["dat", "txt"])
     
     st.divider()
     
@@ -783,7 +785,7 @@ with st.sidebar:
     misclosure_mode = st.radio(
         "Режим расчета допуска",
         options=["distance", "stations"],
-        format_func=lambda x: " По длине хода (км)" if x == "distance" else "🔢 По числу станций",
+        format_func=lambda x: "📏 По длине хода (км)" if x == "distance" else "🔢 По числу станций",
         index=0, key="misclosure_mode"
     )
     
@@ -805,13 +807,13 @@ try:
     st.success(f"✅ Файл прочитан: **{job_name}**")
     
     scheme_name = "BBFF (ЗЗПП)" if scheme == "BBFF" else "BFFB (ЗППЗ)"
-    st.markdown(f'<div class="info-box"> Обнаружена схема измерений: **{scheme_name}**</div>', unsafe_allow_html=True)
+    st.markdown(f'<div class="info-box">📋 Обнаружена схема измерений: **{scheme_name}**</div>', unsafe_allow_html=True)
     
     analyzer = RunAnalyzer(measurements, points_with_heights)
     stations = analyzer.group_into_stations()
     runs = analyzer.identify_runs(stations)
     
-    st.info(f"📊 Найдено: **{len(measurements)}** измерений, **{len(stations)}** станций, **{len(runs)}** ход(ов)")
+    st.info(f" Найдено: **{len(measurements)}** измерений, **{len(stations)}** станций, **{len(runs)}** ход(ов)")
     
     if points_with_heights:
         with st.expander("📍 Найденные исходные отметки"):
@@ -950,7 +952,7 @@ try:
         
         combined_df = pd.concat(all_dfs, ignore_index=True)
         
-        col_a, col_b, col_c = st.columns(3)
+        col_a, col_b, col_c, col_d = st.columns(4)
         
         csv = combined_df.to_csv(index=False).encode('utf-8-sig')
         col_a.download_button(
@@ -972,10 +974,33 @@ try:
             use_container_width=True
         )
         
+        # Экспорт PDF
+        if all_results[0].get("points"):
+            pdf_content = PDFExporter.create_report(all_results[0], job_name, level_class)
+            col_c.download_button(
+                " Скачать PDF",
+                data=pdf_content,
+                file_name=f"{job_name}_report.pdf",
+                mime="application/pdf",
+                use_container_width=True
+            )
+        
         # Экспорт DXF
         if all_results[0].get("points"):
-            dxf_content = DXFExporter.create_profile_dxf(all_results[0]["points"], job_name)
-            col_c.download_button(
+            from collections import OrderedDict
+            dxf_lines = ["0", "SECTION", "2", "ENTITIES"]
+            points = all_results[0]["points"]
+            for i in range(len(points) - 1):
+                p1, p2 = points[i], points[i+1]
+                dxf_lines.extend(["0", "LINE", "8", "PROFILE",
+                    "10", f"{p1.distance_from_start}", "20", f"{p1.h_adjusted}", "30", "0",
+                    "11", f"{p2.distance_from_start}", "21", f"{p2.h_adjusted}", "31", "0"])
+                dxf_lines.extend(["0", "TEXT", "8", "LABELS",
+                    "10", f"{p1.distance_from_start}", "20", f"{p1.h_adjusted + 0.5}", "30", "0",
+                    "40", "0.3", "1", p1.point_id])
+            dxf_lines.extend(["0", "ENDSEC", "0", "EOF"])
+            dxf_content = "\n".join(dxf_lines)
+            col_d.download_button(
                 "📐 Скачать DXF",
                 data=dxf_content.encode('utf-8'),
                 file_name=f"{job_name}_profile.dxf",
@@ -989,10 +1014,10 @@ except Exception as e:
     st.code(traceback.format_exc())
 
 st.divider()
-st.markdown("""
+st.markdown(f"""
 <div style="display: flex; justify-content: space-between; color: #8b98a5; font-size: 0.9rem; padding: 1rem 0;">
-    <span>📐 Geogeolevel v7.0</span>
-    <span>📅 """ + datetime.now().strftime('%d.%m.%Y') + """</span>
+    <span>📐 Geogeolevel v7.1</span>
+    <span>📅 {datetime.now().strftime('%d.%m.%Y')}</span>
     <span>⚡ Streamlit Cloud</span>
 </div>
 """, unsafe_allow_html=True)
