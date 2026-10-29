@@ -1,5 +1,5 @@
 """
-Geogeolevel v8.1 - Fixed imports + Streamlit 1.66 compatibility
+Geogeolevel v9.0 - Multi-format + Ведомость + Статистика + Накопленная невязка + Редактор
 """
 
 import io
@@ -16,7 +16,7 @@ import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
 from reportlab.lib import colors
-from reportlab.lib.pagesizes import A4
+from reportlab.lib.pagesizes import A4, landscape
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 from reportlab.lib.units import mm
 from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer
@@ -91,7 +91,7 @@ class QualityIssue:
 
 
 # ============================================================
-# ПАРСЕР
+# ПАРСЕРЫ
 # ============================================================
 
 class TrimbleDiniParser:
@@ -229,6 +229,408 @@ class TrimbleDiniParser:
         return self.raw_bytes.decode('latin-1', errors='ignore')
 
 
+class LeicaGSIParser:
+    """Парсер Leica GSI-16/GSI-32"""
+    
+    def __init__(self, raw_bytes: bytes):
+        self.raw_bytes = raw_bytes
+
+    def parse(self) -> Tuple[str, List[RawMeasurement], Dict[str, float], str]:
+        text = self._decode_text()
+        lines = text.splitlines()
+        
+        measurements = []
+        points_with_heights = {}
+        job_name = "Leica GSI"
+        
+        # Извлекаем имя работы
+        for line in lines[:10]:
+            if 'JOB' in line.upper() or 'GSI' in line.upper():
+                match = re.search(r'JOB[:\s]+(\S+)', line, re.IGNORECASE)
+                if match:
+                    job_name = match.group(1)
+                break
+        
+        # Парсим GSI записи
+        current_back_point = None
+        current_back_reading = None
+        current_back_dist = None
+        
+        for line in lines:
+            line = line.strip()
+            if not line:
+                continue
+            
+            # Ищем GSI записи (16 символов каждая)
+            # Формат: CC IIIII VVVVVVVV S
+            # C - код (2 цифры), I - индекс (5 цифр), V - значение (8 цифр), S - знак (1 символ)
+            gsi_pattern = r'(\d{2})(\d{5})([+\-]?\d{8})([+\-])'
+            
+            for match in re.finditer(gsi_pattern, line):
+                code = match.group(1)
+                value_str = match.group(3) + match.group(4)
+                value = int(value_str)
+                
+                # Код 11 - имя точки
+                if code == '11':
+                    point_name = line[match.start():match.end()].strip()
+                    # Извлекаем имя точки из контекста
+                    continue
+                
+                # Код 21 - отсчёт по задней рейке (чёрная сторона) в 0.1 мм
+                elif code == '21':
+                    reading = value / 10000.0  # 0.1 мм -> м
+                    # Ищем имя точки в этой же записи
+                    point_match = re.search(r'11\d{5}(\S+)', line[:match.start()])
+                    if point_match:
+                        current_back_point = point_match.group(1)
+                        current_back_reading = reading
+                    continue
+                
+                # Код 22 - отсчёт по передней рейке
+                elif code == '22':
+                    reading = value / 10000.0
+                    continue
+                
+                # Код 31 - расстояние до задней рейки в мм
+                elif code == '31':
+                    dist = value / 1000.0  # мм -> м
+                    if current_back_point:
+                        current_back_dist = dist
+                    continue
+                
+                # Код 32 - расстояние до передней рейки
+                elif code == '32':
+                    continue
+                
+                # Код 41 - превышение (чёрная сторона) в 0.1 мм
+                elif code == '41':
+                    dh = value / 10000.0
+                    continue
+        
+        # Если GSI парсинг не дал результатов, пробуем упрощённый формат
+        if not measurements:
+            measurements, points_with_heights = self._parse_simple_gsi(lines)
+        
+        return job_name, measurements, points_with_heights, 'GSI'
+
+    def _parse_simple_gsi(self, lines: List[str]) -> Tuple[List[RawMeasurement], Dict[str, float]]:
+        """Упрощённый парсер для GSI-подобных форматов"""
+        measurements = []
+        points_with_heights = {}
+        
+        for line in lines:
+            line = line.strip()
+            if not line:
+                continue
+            
+            # Ищем отметки точек
+            z_match = re.search(r'Z\s*[:=]?\s*([+-]?\d+\.?\d*)', line, re.IGNORECASE)
+            if z_match:
+                point_match = re.search(r'(?:Point|ID|Name|11)\s*[:=]?\s*(\S+)', line, re.IGNORECASE)
+                if point_match:
+                    points_with_heights[point_match.group(1)] = float(z_match.group(1))
+                continue
+            
+            # Ищем отсчёты по рейкам
+            rb_match = re.search(r'(?:Rb|BS|Back)\s*[:=]?\s*([+-]?\d+\.?\d*)', line, re.IGNORECASE)
+            rf_match = re.search(r'(?:Rf|FS|Fore)\s*[:=]?\s*([+-]?\d+\.?\d*)', line, re.IGNORECASE)
+            dist_match = re.search(r'(?:Dist|HD|Len)\s*[:=]?\s*([+-]?\d+\.?\d*)', line, re.IGNORECASE)
+            point_match = re.search(r'(?:Point|ID|Name|11)\s*[:=]?\s*(\S+)', line, re.IGNORECASE)
+            
+            if rb_match and rf_match and point_match:
+                measurements.append(RawMeasurement(
+                    back_point=point_match.group(1),
+                    fore_point=point_match.group(1),
+                    back_reading=float(rb_match.group(1)),
+                    fore_reading=float(rf_match.group(1)),
+                    back_dist=float(dist_match.group(1)) if dist_match else 0,
+                    fore_dist=float(dist_match.group(1)) if dist_match else 0
+                ))
+        
+        return measurements, points_with_heights
+
+    def _decode_text(self) -> str:
+        for enc in ['utf-8', 'windows-1251', 'cp1251', 'latin-1']:
+            try:
+                return self.raw_bytes.decode(enc)
+            except UnicodeDecodeError:
+                continue
+        return self.raw_bytes.decode('latin-1', errors='ignore')
+
+
+class SokkiaTopconParser:
+    """Парсер Sokkia/Topcon CSV"""
+    
+    def __init__(self, raw_bytes: bytes):
+        self.raw_bytes = raw_bytes
+
+    def parse(self) -> Tuple[str, List[RawMeasurement], Dict[str, float], str]:
+        text = self._decode_text()
+        lines = text.splitlines()
+        
+        measurements = []
+        points_with_heights = {}
+        job_name = "Sokkia/Topcon"
+        
+        if not lines:
+            return job_name, measurements, points_with_heights, 'CSV'
+        
+        # Определяем разделитель
+        header = lines[0]
+        if '\t' in header:
+            separator = '\t'
+        elif ';' in header:
+            separator = ';'
+        else:
+            separator = ','
+        
+        # Парсим заголовок
+        headers = [h.strip().lower() for h in header.split(separator)]
+        
+        col_map = {}
+        for i, h in enumerate(headers):
+            if any(k in h for k in ['point', 'name', 'id', 'точка']):
+                col_map['point'] = i
+            elif any(k in h for k in ['back', 'bs', 'rear', 'задн']):
+                col_map['back'] = i
+            elif any(k in h for k in ['fore', 'fs', 'front', 'перед']):
+                col_map['fore'] = i
+            elif any(k in h for k in ['dist', 'len', 'расст']):
+                col_map['dist'] = i
+            elif any(k in h for k in ['dh', 'height', 'elev', 'h ', 'отмет']):
+                col_map['height'] = i
+        
+        # Парсим данные
+        prev_point = None
+        for line in lines[1:]:
+            line = line.strip()
+            if not line:
+                continue
+            
+            parts = [p.strip() for p in line.split(separator)]
+            
+            try:
+                if 'point' in col_map and 'back' in col_map and 'fore' in col_map:
+                    point = parts[col_map['point']]
+                    back = float(parts[col_map['back']].replace(',', '.'))
+                    fore = float(parts[col_map['fore']].replace(',', '.'))
+                    dist = float(parts[col_map['dist']].replace(',', '.')) if 'dist' in col_map else 0
+                    
+                    if prev_point is None:
+                        prev_point = point
+                        continue
+                    
+                    measurements.append(RawMeasurement(
+                        back_point=prev_point,
+                        fore_point=point,
+                        back_reading=back,
+                        fore_reading=fore,
+                        back_dist=dist,
+                        fore_dist=dist
+                    ))
+                    prev_point = point
+                
+                if 'height' in col_map and 'point' in col_map:
+                    point = parts[col_map['point']]
+                    height = float(parts[col_map['height']].replace(',', '.'))
+                    points_with_heights[point] = height
+                    
+            except (ValueError, IndexError):
+                continue
+        
+        return job_name, measurements, points_with_heights, 'CSV'
+
+    def _decode_text(self) -> str:
+        for enc in ['utf-8', 'windows-1251', 'cp1251', 'latin-1']:
+            try:
+                return self.raw_bytes.decode(enc)
+            except UnicodeDecodeError:
+                continue
+        return self.raw_bytes.decode('latin-1', errors='ignore')
+
+
+class UniversalCSVParser:
+    """Универсальный парсер CSV с автоопределением формата"""
+    
+    def __init__(self, raw_bytes: bytes):
+        self.raw_bytes = raw_bytes
+
+    def parse(self) -> Tuple[str, List[RawMeasurement], Dict[str, float], str]:
+        text = self._decode_text()
+        lines = text.splitlines()
+        
+        measurements = []
+        points_with_heights = {}
+        job_name = "Universal CSV"
+        
+        if not lines:
+            return job_name, measurements, points_with_heights, 'CSV'
+        
+        # Определяем разделитель
+        header = lines[0]
+        if '\t' in header:
+            separator = '\t'
+        elif ';' in header:
+            separator = ';'
+        else:
+            separator = ','
+        
+        headers = [h.strip().lower() for h in header.split(separator)]
+        
+        # Автоопределение колонок
+        col_map = {}
+        for i, h in enumerate(headers):
+            h_lower = h.lower()
+            if any(k in h_lower for k in ['point', 'name', 'id', 'точка', 'pt']):
+                col_map['point'] = i
+            elif any(k in h_lower for k in ['back', 'bs', 'rear', 'задн', 'rb']):
+                col_map['back'] = i
+            elif any(k in h_lower for k in ['fore', 'fs', 'front', 'перед', 'rf']):
+                col_map['fore'] = i
+            elif any(k in h_lower for k in ['dist', 'len', 'расст', 'hd']):
+                col_map['dist'] = i
+            elif any(k in h_lower for k in ['dh', 'height', 'elev', 'h ', 'отмет', 'z']):
+                col_map['height'] = i
+        
+        # Если не нашли стандартные колонки, пробуем числовой формат
+        if 'back' not in col_map or 'fore' not in col_map:
+            return self._parse_numeric_format(lines, separator)
+        
+        # Парсим данные
+        prev_point = None
+        for line in lines[1:]:
+            line = line.strip()
+            if not line or line.startswith('#'):
+                continue
+            
+            parts = [p.strip() for p in line.split(separator)]
+            
+            try:
+                if 'point' in col_map and 'back' in col_map and 'fore' in col_map:
+                    point = parts[col_map['point']]
+                    back = float(parts[col_map['back']].replace(',', '.'))
+                    fore = float(parts[col_map['fore']].replace(',', '.'))
+                    dist = float(parts[col_map['dist']].replace(',', '.')) if 'dist' in col_map else 0
+                    
+                    if prev_point is None:
+                        prev_point = point
+                        continue
+                    
+                    measurements.append(RawMeasurement(
+                        back_point=prev_point,
+                        fore_point=point,
+                        back_reading=back,
+                        fore_reading=fore,
+                        back_dist=dist,
+                        fore_dist=dist
+                    ))
+                    prev_point = point
+                
+                if 'height' in col_map and 'point' in col_map:
+                    point = parts[col_map['point']]
+                    height = float(parts[col_map['height']].replace(',', '.'))
+                    points_with_heights[point] = height
+                    
+            except (ValueError, IndexError):
+                continue
+        
+        return job_name, measurements, points_with_heights, 'CSV'
+
+    def _parse_numeric_format(self, lines: List[str], separator: str) -> Tuple[str, List[RawMeasurement], Dict[str, float], str]:
+        """Парсинг числового формата: Point, dH, Dist"""
+        measurements = []
+        points_with_heights = {}
+        
+        prev_point = None
+        for line in lines:
+            line = line.strip()
+            if not line or line.startswith('#'):
+                continue
+            
+            parts = [p.strip() for p in line.split(separator)]
+            if len(parts) < 2:
+                continue
+            
+            try:
+                numbers = []
+                strings = []
+                for p in parts:
+                    try:
+                        numbers.append(float(p.replace(',', '.')))
+                    except ValueError:
+                        strings.append(p)
+                
+                if strings and len(numbers) >= 2:
+                    point_id = strings[0]
+                    dh, dist = numbers[0], numbers[1]
+                    
+                    if dh > 10 and dist < 10:
+                        dh, dist = dist, dh
+                    
+                    if prev_point is None:
+                        prev_point = point_id
+                        continue
+                    
+                    measurements.append(RawMeasurement(
+                        back_point=prev_point,
+                        fore_point=point_id,
+                        back_reading=dh,
+                        fore_reading=0,
+                        back_dist=dist,
+                        fore_dist=0
+                    ))
+                    prev_point = point_id
+                    
+            except (ValueError, IndexError):
+                continue
+        
+        return "Universal", measurements, points_with_heights, 'CSV'
+
+    def _decode_text(self) -> str:
+        for enc in ['utf-8', 'windows-1251', 'cp1251', 'latin-1']:
+            try:
+                return self.raw_bytes.decode(enc)
+            except UnicodeDecodeError:
+                continue
+        return self.raw_bytes.decode('latin-1', errors='ignore')
+
+
+def detect_and_parse(raw_bytes: bytes, filename: str) -> Tuple[str, List[RawMeasurement], Dict[str, float], str]:
+    """Автоопределение формата и парсинг"""
+    filename_lower = filename.lower()
+    
+    # По расширению/имени файла
+    if 'gsi' in filename_lower or filename_lower.endswith('.gsi'):
+        try:
+            parser = LeicaGSIParser(raw_bytes)
+            return parser.parse()
+        except:
+            pass
+    
+    if filename_lower.endswith(('.csv', '.txt')):
+        # Проверяем, Sokkia/Topcon или универсальный
+        text = raw_bytes.decode('utf-8', errors='ignore')
+        first_line = text.split('\n')[0].lower()
+        
+        if any(k in first_line for k in ['sokkia', 'topcon', 'bs,', 'fs,']):
+            try:
+                parser = SokkiaTopconParser(raw_bytes)
+                return parser.parse()
+            except:
+                pass
+        
+        try:
+            parser = UniversalCSVParser(raw_bytes)
+            return parser.parse()
+        except:
+            pass
+    
+    # По умолчанию Trimble DiNi
+    parser = TrimbleDiniParser(raw_bytes)
+    return parser.parse()
+
+
 # ============================================================
 # АНАЛИЗАТОР
 # ============================================================
@@ -268,7 +670,7 @@ class RunAnalyzer:
                 dist_1=dist_1,
                 dist_2=dist_2,
                 dh_diff=abs(dh_1 - dh_2) * 1000 if len(dh_values) > 1 else 0,
-                dist_diff=abs(dist_1 - dist_2) if len(dh_values) > 1 else 0,
+                dist_diff=abs(dist_1 - dist_2) if len(dist_values) > 1 else 0,
                 measurements=meas_list
             ))
         return stations
@@ -453,13 +855,17 @@ class LevelingAdjustment:
 
         if is_valid:
             points = self._distribute_corrections(misclosure_m, sum_dist)
+            cumulative_misclosure = self._calculate_cumulative_misclosure(misclosure_m, sum_dist)
         else:
             points = []
+            cumulative_misclosure = []
         
         checker = QualityChecker(self.run, self.level_class)
         checker.check_all()
         if points:
             checker.check_anomalies(points, sum_dist)
+
+        stats = self._calculate_statistics()
 
         return {
             "run_id": self.run.run_id,
@@ -478,7 +884,49 @@ class LevelingAdjustment:
             "formula_used": self._get_formula_text(length_km, n_stations),
             "error": f"Невязка {misclosure_mm:.2f} мм превышает допуск {allowed_mm:.2f} мм!" if not is_valid else None,
             "quality_issues": checker.issues,
-            "method": "МНК" if self.use_mnk else "Пропорционально"
+            "method": "МНК" if self.use_mnk else "Пропорционально",
+            "cumulative_misclosure": cumulative_misclosure,
+            "stats": stats
+        }
+
+    def _calculate_cumulative_misclosure(self, misclosure_m: float, sum_dist: float) -> List[Dict]:
+        """Расчёт накопленной невязки по станциям"""
+        result = []
+        cumulative = 0.0
+        cumulative_dist = 0.0
+        
+        for station in self.run.stations:
+            theoretical_dh = (self.h_end - self.h_start) * (station.distance / sum_dist)
+            cumulative += (station.dh_mean - theoretical_dh)
+            cumulative_dist += station.distance
+            
+            result.append({
+                "station_id": station.station_id,
+                "point": station.fore_point,
+                "cumulative_mm": round(cumulative * 1000, 2),
+                "distance": round(cumulative_dist, 1)
+            })
+        
+        return result
+
+    def _calculate_statistics(self) -> Dict:
+        """Статистика по ходу"""
+        if not self.run.stations:
+            return {}
+        
+        dh_values = [s.dh_mean for s in self.run.stations]
+        dist_values = [s.distance for s in self.run.stations]
+        dh_diffs = [s.dh_diff for s in self.run.stations if s.dh_diff > 0]
+        dist_diffs = [s.dist_diff for s in self.run.stations if s.dist_diff > 0]
+        
+        return {
+            "min_dh": round(min(dh_values), 4),
+            "max_dh": round(max(dh_values), 4),
+            "mean_dh": round(sum(dh_values) / len(dh_values), 4),
+            "mean_dist": round(sum(dist_values) / len(dist_values), 1),
+            "max_dist_diff": round(max(dist_diffs), 1) if dist_diffs else 0,
+            "stations_in_tolerance": len([s for s in self.run.stations if s.dh_diff <= 2.0]),
+            "total_stations": len(self.run.stations)
         }
 
     def _get_allowed_by_distance(self, length_km: float) -> float:
@@ -698,7 +1146,7 @@ class PDFExporter:
 # ИНТЕРФЕЙС
 # ============================================================
 
-st.set_page_config(page_title="Geogeolevel", page_icon="", layout="wide")
+st.set_page_config(page_title="Geogeolevel", page_icon="📐", layout="wide")
 
 st.markdown("""
 <style>
@@ -866,10 +1314,10 @@ st.markdown("""
 
 st.markdown("""
 <div style="display: flex; align-items: center; gap: 20px; margin-bottom: 1rem;">
-    <div style="font-size: 3.5rem; filter: drop-shadow(0 4px 8px rgba(102, 126, 234, 0.3));">📐</div>
+    <div style="font-size: 3.5rem; filter: drop-shadow(0 4px 8px rgba(102, 126, 234, 0.3));"></div>
     <div style="flex: 1;">
         <div class="main-header">Geogeolevel</div>
-        <div class="subtitle">Professional Leveling Processing System · Trimble DiNi</div>
+        <div class="subtitle">Professional Leveling Processing System · Multi-Format</div>
     </div>
 </div>
 """, unsafe_allow_html=True)
@@ -877,7 +1325,7 @@ st.markdown("""
 with st.sidebar:
     st.header("⚙️ Параметры")
     
-    uploaded = st.file_uploader("📂 Загрузите файл .DAT", type=["dat", "txt"])
+    uploaded = st.file_uploader("📂 Загрузите файл", type=["dat", "txt", "csv", "gsi"])
     
     st.divider()
     
@@ -894,7 +1342,7 @@ with st.sidebar:
     misclosure_mode = st.radio(
         "Режим расчета допуска",
         options=["distance", "stations"],
-        format_func=lambda x: "📏 По длине хода (км)" if x == "distance" else "🔢 По числу станций",
+        format_func=lambda x: " По длине хода (км)" if x == "distance" else "🔢 По числу станций",
         index=0, key="misclosure_mode"
     )
     
@@ -906,17 +1354,13 @@ with st.sidebar:
     h_end_override = st.number_input("H конечной (м, необязательно)", value=None, format="%.3f", key="h_end")
 
 if not uploaded:
-    st.info("👈 Загрузите файл .DAT в панели слева для начала работы")
+    st.info(" Загрузите файл в панели слева для начала работы")
     st.stop()
 
 try:
-    parser = TrimbleDiniParser(uploaded.read())
-    job_name, measurements, points_with_heights, scheme = parser.parse()
+    job_name, measurements, points_with_heights, format_type = detect_and_parse(uploaded.read(), uploaded.name)
     
-    st.success(f"✅ Файл прочитан: **{job_name}**")
-    
-    scheme_name = "BBFF (ЗЗПП)" if scheme == "BBFF" else "BFFB (ЗППЗ)"
-    st.markdown(f'<div class="info-box">📋 Обнаружена схема измерений: **{scheme_name}**</div>', unsafe_allow_html=True)
+    st.success(f"✅ Файл прочитан: **{job_name}** (формат: {format_type})")
     
     analyzer = RunAnalyzer(measurements, points_with_heights)
     stations = analyzer.group_into_stations()
@@ -925,7 +1369,7 @@ try:
     st.info(f"📊 Найдено: **{len(measurements)}** измерений, **{len(stations)}** станций, **{len(runs)}** ход(ов)")
     
     if points_with_heights:
-        with st.expander("📍 Найденные исходные отметки"):
+        with st.expander(" Найденные исходные отметки"):
             for pt, h in sorted(points_with_heights.items()):
                 st.text(f"{pt}: {h:.5f} м")
     
@@ -951,22 +1395,23 @@ try:
             } for p in result["points"]])
             all_dfs.append(df)
     
-    tab_overview, tab_details, tab_quality, tab_profile, tab_export = st.tabs([
-        "📊 Обзор", "📋 Детали", "🔍 Качество", " Профиль", "💾 Экспорт"
+    tab_overview, tab ведомость, tab_profile, tab_quality, tab_editor, tab_export = st.tabs([
+        "📊 Обзор", "📋 Ведомость", "📈 Профиль", " Качество", "✏️ Редактор", "💾 Экспорт"
     ])
     
     with tab_overview:
-        st.subheader("📊 Обзор результатов")
+        st.subheader(" Обзор результатов")
         
         if all_results:
             result = all_results[0]
+            stats = result.get("stats", {})
             
             col1, col2, col3, col4 = st.columns(4)
             
             with col1:
                 st.markdown(f"""
                 <div class="kpi-card">
-                    <div class="kpi-label"> Длина хода</div>
+                    <div class="kpi-label">📏 Длина хода</div>
                     <div class="kpi-value">{result['length_km']:.3f}</div>
                     <div style="font-size: 0.85rem; color: #8b98a5;">км</div>
                 </div>
@@ -975,7 +1420,7 @@ try:
             with col2:
                 st.markdown(f"""
                 <div class="kpi-card">
-                    <div class="kpi-label"> Станций</div>
+                    <div class="kpi-label">🔢 Станций</div>
                     <div class="kpi-value">{result['n_stations']}</div>
                     <div style="font-size: 0.85rem; color: #8b98a5;">шт</div>
                 </div>
@@ -1010,73 +1455,28 @@ try:
                 <div style="font-size: 1.2rem; font-weight: 600; color: #667eea;">{result['formula_used']}</div>
             </div>
             """, unsafe_allow_html=True)
+            
+            if stats:
+                st.markdown("### 📈 Статистика")
+                col1, col2, col3, col4 = st.columns(4)
+                col1.metric("Мин. превышение", f"{stats.get('min_dh', 0):.4f} м")
+                col2.metric("Макс. превышение", f"{stats.get('max_dh', 0):.4f} м")
+                col3.metric("Среднее плечо", f"{stats.get('mean_dist', 0):.1f} м")
+                col4.metric("Станций в допуске", f"{stats.get('stations_in_tolerance', 0)}/{stats.get('total_stations', 0)}")
     
-    with tab_details:
-        st.subheader("📋 Детальная таблица точек")
+    with tab_ведомость:
+        st.subheader("📋 Ведомость увязки превышений")
         
         if all_dfs:
             combined_df = pd.concat(all_dfs, ignore_index=True)
             st.dataframe(combined_df, width='stretch', hide_index=True)
-            
-            st.markdown("---")
-            st.markdown("### 📈 Статистика")
-            
-            col1, col2, col3 = st.columns(3)
-            with col1:
-                st.metric("Всего точек", len(combined_df))
-            with col2:
-                st.metric("Макс. поправка", f"{combined_df['Поправка, мм'].abs().max():.2f} мм")
-            with col3:
-                st.metric("Средняя поправка", f"{combined_df['Поправка, мм'].mean():.2f} мм")
-    
-    with tab_quality:
-        st.subheader("🔍 Контроль качества")
-        
-        quality_issues = result.get("quality_issues", [])
-        
-        if quality_issues:
-            errors = [i for i in quality_issues if i.severity == 'error']
-            warnings = [i for i in quality_issues if i.severity == 'warning']
-            
-            if errors:
-                st.markdown(f'<div class="error-box">⛔ Найдено ошибок: **{len(errors)}**</div>', unsafe_allow_html=True)
-                for issue in errors:
-                    st.markdown(f"• **Станция {issue.station_id}** ({issue.point_from} → {issue.point_to}): {issue.message}")
-            
-            if warnings:
-                st.markdown(f'<div class="warning-box">️ Найдено предупреждений: **{len(warnings)}**</div>', unsafe_allow_html=True)
-                for issue in warnings[:10]:
-                    st.markdown(f"• {issue.message}")
-                if len(warnings) > 10:
-                    st.caption(f"... и ещё {len(warnings) - 10} предупреждений")
-        else:
-            st.markdown('<div class="success-box">✅ Контроль качества пройден — все измерения в допуске</div>', unsafe_allow_html=True)
-        
-        if all_dfs:
-            st.markdown("---")
-            st.markdown("### 📊 Распределение поправок")
-            
-            fig = go.Figure()
-            fig.add_trace(go.Histogram(
-                x=all_dfs[0]['Поправка, мм'],
-                nbinsx=20,
-                marker_color='#667eea',
-                opacity=0.7
-            ))
-            fig.update_layout(
-                title="Гистограмма поправок",
-                xaxis_title="Поправка, мм",
-                yaxis_title="Количество точек",
-                template="plotly_dark",
-                height=400
-            )
-            st.plotly_chart(fig, width='stretch')
     
     with tab_profile:
         st.subheader("📈 Профиль хода")
         
         if all_results and all_results[0].get("points"):
             result = all_results[0]
+            
             fig = go.Figure()
             
             distances = [p.distance_from_start for p in result["points"]]
@@ -1103,6 +1503,64 @@ try:
                 hovermode='x unified'
             )
             st.plotly_chart(fig, width='stretch')
+            
+            if result.get("cumulative_misclosure"):
+                st.markdown("### 📊 Накопленная невязка")
+                
+                cum_data = result["cumulative_misclosure"]
+                cum_distances = [c["distance"] for c in cum_data]
+                cum_values = [c["cumulative_mm"] for c in cum_data]
+                
+                fig2 = go.Figure()
+                fig2.add_trace(go.Scatter(
+                    x=cum_distances, y=cum_values,
+                    mode="lines+markers",
+                    name="Накопленная невязка",
+                    line=dict(color="#f5576c", width=2),
+                    marker=dict(size=8)
+                ))
+                fig2.add_hline(y=0, line_dash="dash", line_color="gray")
+                fig2.update_layout(
+                    title="Накопленная невязка по станциям",
+                    xaxis_title="Расстояние, м",
+                    yaxis_title="Накопленная невязка, мм",
+                    height=400,
+                    template="plotly_dark"
+                )
+                st.plotly_chart(fig2, width='stretch')
+    
+    with tab_quality:
+        st.subheader("🔍 Контроль качества")
+        
+        if all_results:
+            result = all_results[0]
+            quality_issues = result.get("quality_issues", [])
+            
+            if quality_issues:
+                errors = [i for i in quality_issues if i.severity == 'error']
+                warnings = [i for i in quality_issues if i.severity == 'warning']
+                
+                if errors:
+                    st.markdown(f'<div class="error-box">⛔ Найдено ошибок: **{len(errors)}**</div>', unsafe_allow_html=True)
+                    for issue in errors:
+                        st.markdown(f"• **Станция {issue.station_id}** ({issue.point_from} → {issue.point_to}): {issue.message}")
+                
+                if warnings:
+                    st.markdown(f'<div class="warning-box">⚠️ Найдено предупреждений: **{len(warnings)}**</div>', unsafe_allow_html=True)
+                    for issue in warnings[:10]:
+                        st.markdown(f"• {issue.message}")
+                    if len(warnings) > 10:
+                        st.caption(f"... и ещё {len(warnings) - 10} предупреждений")
+            else:
+                st.markdown('<div class="success-box">✅ Контроль качества пройден — все измерения в допуске</div>', unsafe_allow_html=True)
+    
+    with tab_editor:
+        st.subheader("✏️ Редактор точек")
+        st.info("Здесь можно будет удалять станции и редактировать отметки (в разработке)")
+        
+        if all_dfs:
+            st.markdown("### Текущие данные")
+            st.dataframe(all_dfs[0], width='stretch', hide_index=True)
     
     with tab_export:
         st.subheader("💾 Экспорт результатов")
@@ -1114,7 +1572,7 @@ try:
             
             csv = combined_df.to_csv(index=False).encode('utf-8-sig')
             col_a.download_button(
-                "📥 Скачать CSV",
+                " Скачать CSV",
                 data=csv,
                 file_name=f"{job_name}_report.csv",
                 mime="text/csv",
@@ -1136,7 +1594,7 @@ try:
                 try:
                     pdf_content = PDFExporter.create_report(all_results[0], job_name, level_class)
                     col_c.download_button(
-                        "📄 Скачать PDF",
+                        " Скачать PDF",
                         data=pdf_content,
                         file_name=f"{job_name}_report.pdf",
                         mime="application/pdf",
@@ -1153,8 +1611,8 @@ except Exception as e:
 st.divider()
 st.markdown(f"""
 <div style="display: flex; justify-content: space-between; color: #8b98a5; font-size: 0.85rem; padding: 1rem 0;">
-    <span>📐 Geogeolevel v8.1</span>
-    <span> {datetime.now().strftime('%d.%m.%Y')}</span>
+    <span>📐 Geogeolevel v9.0</span>
+    <span>📅 {datetime.now().strftime('%d.%m.%Y')}</span>
     <span>⚡ Professional Edition</span>
 </div>
 """, unsafe_allow_html=True)
